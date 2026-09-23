@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json.swell.store/setting.json",
+  "label": "Gorgias connection",
+  "description": "Connect your Gorgias helpdesk account",
+  "fields": [
+    {
+      "id": "subdomain",
+      "label": "Gorgias subdomain",
+      "type": "text",
+      "description": "The \"acme\" in acme.gorgias.com",
+      "placeholder": "acme"
+    },
+    {
+      "id": "email",
+      "label": "Agent email",
+      "type": "text",
+      "description": "Email of the Gorgias agent the API key belongs to"
+    },
+    {
+      "id": "api_key",
+      "label": "API key",
+      "type": "text",
+      "description": "Gorgias REST API key (Settings → You → REST API)"
+    },
+    {
+      "id": "shared_secret",
+      "label": "Shared secret",
+      "type": "text",
+      "description": "Random string used to authenticate calls from Gorgias back to this app (e.g. openssl rand -hex 24)"
+    }
+  ]
+}
