@@ -1,0 +1,17 @@
+{
+	"description": "Gorgias helpdesk integration: ticket context, sidebar data and actions",
+	"id": "gorgias",
+	"name": "Gorgias",
+	"type": "integration",
+	"version": "1.0.1",
+	"permissions": [
+		"read_settings",
+		"read_accounts",
+		"write_accounts",
+		"read_orders",
+		"write_orders",
+		"read_shipments",
+		"read_subscriptions",
+		"read_carts"
+	]
+}

@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json.swell.store/setting.json",
+  "label": "Sync",
+  "description": "Control how customer and order data syncs to Gorgias",
+  "fields": [
+    {
+      "id": "enabled",
+      "label": "Sync customers and orders to Gorgias",
+      "type": "toggle",
+      "default": false
+    },
+    {
+      "id": "sync_ticket_updates",
+      "label": "Sync ticket status updates from Gorgias",
+      "type": "toggle",
+      "description": "Also receive ticket-updated events (higher traffic)",
+      "default": false,
+      "conditions": {
+        "sync.enabled": true
+      }
+    },
+    {
+      "id": "backfill_limit",
+      "label": "Backfill limit",
+      "type": "select",
+      "description": "Maximum number of existing customers to sync when connecting",
+      "options": [
+        { "value": "100", "label": "100" },
+        { "value": "500", "label": "500" },
+        { "value": "1000", "label": "1000" }
+      ],
+      "default": "500",
+      "conditions": {
+        "sync.enabled": true
+      }
+    }
+  ]
+}

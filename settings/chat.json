@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json.swell.store/setting.json",
+  "label": "Chat widget",
+  "description": "Show the Gorgias chat widget on your storefront",
+  "fields": [
+    {
+      "id": "enabled",
+      "label": "Enable chat widget",
+      "type": "toggle",
+      "default": false,
+      "public": true
+    },
+    {
+      "id": "app_key",
+      "label": "Chat app key",
+      "type": "text",
+      "description": "From Gorgias: Settings → Channels → Chat → your chat integration → Installation → \"Any Other Website\" — the key in https://config.gorgias.chat/bundle-loader/{KEY}",
+      "public": true,
+      "conditions": {
+        "chat.enabled": true
+      }
+    }
+  ]
+}

@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json.swell.store/content.json",
+  "collection": "accounts",
+  "fields": [
+    {
+      "id": "open_ticket_count",
+      "label": "Open tickets",
+      "type": "integer",
+      "description": "Number of open Gorgias tickets from this customer",
+      "readonly": true
+    },
+    {
+      "id": "last_ticket_subject",
+      "label": "Last ticket",
+      "type": "text",
+      "readonly": true
+    },
+    {
+      "id": "last_ticket_at",
+      "label": "Last ticket activity",
+      "type": "date",
+      "readonly": true
+    },
+    {
+      "id": "last_ticket_url",
+      "label": "View in Gorgias",
+      "type": "url",
+      "readonly": true
+    }
+  ],
+  "views": [
+    {
+      "id": "list",
+      "fields": [
+        {
+          "id": "open_ticket_count",
+          "label": "Open tickets"
+        }
+      ]
+    },
+    {
+      "id": "edit",
+      "tabs": [
+        {
+          "id": "gorgias",
+          "label": "Support",
+          "fields": [
+            {
+              "type": "field_row",
+              "fields": [
+                {
+                  "id": "open_ticket_count"
+                },
+                {
+                  "id": "last_ticket_at"
+                }
+              ]
+            },
+            {
+              "id": "last_ticket_subject"
+            },
+            {
+              "id": "last_ticket_url"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
