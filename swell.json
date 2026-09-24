@@ -13,5 +13,31 @@
 		"read_shipments",
 		"read_subscriptions",
 		"read_carts"
+	],
+	"images": [
+		{
+			"id": "ticket-sidebar",
+			"title": "Swell orders beside every ticket",
+			"description": "When a ticket arrives, the Gorgias sidebar shows the customer's Swell profile and latest orders, each linked to your dashboard.",
+			"image_src": "assets/screenshots/1-ticket-sidebar.png"
+		},
+		{
+			"id": "swell-support",
+			"title": "Support history in Swell",
+			"description": "Each customer gets a Support tab with open tickets and their latest conversation, and the customer list shows who's waiting.",
+			"image_src": "assets/screenshots/2-swell-support.png"
+		},
+		{
+			"id": "customer-sync",
+			"title": "Customers synced to Gorgias",
+			"description": "Customers are created in Gorgias with name, email and phone, linked to Swell, and kept current as orders are placed and shipped.",
+			"image_src": "assets/screenshots/3-customer-sync.png"
+		},
+		{
+			"id": "setup",
+			"title": "Connected in minutes",
+			"description": "Enter your Gorgias details and connect once. The integration and sidebar widget are created in Gorgias for you.",
+			"image_src": "assets/screenshots/4-setup.png"
+		}
 	]
 }
