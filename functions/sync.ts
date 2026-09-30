@@ -1,55 +1,58 @@
-import { requestParams, verifySharedSecret } from './lib/auth';
-import { clientFromSettings } from './lib/gorgias';
+import { verifySecretHeader } from './lib/auth';
+import { callSync } from './lib/connect';
+import { clientFromState, isConnected } from './lib/gorgias';
+import { loadState, saveState } from './lib/state';
 import { syncAccountToGorgias } from './lib/sync-account';
-import { functionUrl } from './lib/urls';
 
 export const config: SwellConfig = {
   description:
-    'Sync customers to Gorgias: single-account refresh or self-chaining backfill',
+    'Import existing customers into Gorgias in small batches, or refresh one customer (called by the app itself)',
   route: {
     public: true,
     methods: ['post'],
+    headers: ['x-swell-gorgias-secret'],
   },
   timeout: 10000,
 };
 
 // Small batches with a self-invocation chain: each invocation stays within the
-// 10s function budget and the Gorgias rate bucket (40 req/20s); re-running is
-// idempotent, so a dropped chain link is recovered by re-running connect.
+// 10s function budget and the Gorgias rate bucket (80 req/20s). Progress is
+// saved after every batch, and reconcile() restarts a stalled chain from it.
 const BATCH_SIZE = 2;
 
-
 export default async function (req: SwellRequest) {
-  const settings = await req.swell.settings();
-  const secret: string | undefined = settings?.connection?.shared_secret;
-
-  if (!verifySharedSecret(req, secret)) {
+  let state = await loadState(req.swell);
+  if (!verifySecretHeader(req.headers, state.internal_secret)) {
     return new SwellResponse({ error: 'unauthorized' }, { status: 401 });
   }
+
+  const settings = await req.swell.settings();
   if (!settings?.sync?.enabled) {
     return { skipped: 'sync_disabled' };
   }
+  if (!isConnected(state)) {
+    return { skipped: 'not_connected' };
+  }
 
-  const gorgias = clientFromSettings(settings);
-  const appId = req.appId || 'gorgias';
-  const params = requestParams(req);
-  const env = req.headers.get('swell-env');
+  const gorgias = clientFromState(state);
+  const params: SwellData = req.data || {};
 
   // Refresh mode: sync one account
   if (params.account_id) {
     const result = await syncAccountToGorgias(
       req.swell,
       gorgias,
-      params.account_id,
-      req.store,
-      env,
+      String(params.account_id),
     );
     return { mode: 'refresh', ...result };
   }
 
-  // Backfill mode: process one page, then chain to the next
+  // Import mode: process the expected page, then chain to the next
+  const page = Math.max(1, parseInt(String(params.page || '1'), 10));
+  if (state.backfill_done || page !== (state.backfill_page || 1)) {
+    return { mode: 'import', skipped: 'stale_page', page };
+  }
   const limit = parseInt(settings.sync.backfill_limit || '500', 10);
-  const page = Math.max(1, parseInt(params.page || '1', 10));
   const maxPages = Math.ceil(limit / BATCH_SIZE);
 
   const res = await req.swell.get('/accounts', {
@@ -63,16 +66,9 @@ export default async function (req: SwellRequest) {
   const results = [];
   for (const account of accounts) {
     try {
-      results.push(
-        await syncAccountToGorgias(
-          req.swell,
-          gorgias,
-          account.id,
-          req.store,
-          env,
-        ),
-      );
+      results.push(await syncAccountToGorgias(req.swell, gorgias, account.id));
     } catch (err) {
+      console.error(`Import of account ${account.id} failed: ${String(err)}`);
       results.push({
         account_id: account.id,
         synced: false,
@@ -82,19 +78,16 @@ export default async function (req: SwellRequest) {
   }
 
   const done = accounts.length < BATCH_SIZE || page >= maxPages;
+  state = await saveState(req.swell, state, {
+    backfill_page: done ? page : page + 1,
+    backfill_done: done,
+    backfill_synced:
+      (state.backfill_synced || 0) + results.filter((r) => r.synced).length,
+    date_backfill_updated: new Date().toISOString(),
+  });
   if (!done) {
-    const next = fetch(
-      `${functionUrl(req.store, appId, 'sync')}?page=${page + 1}`,
-      {
-        method: 'POST',
-        headers: {
-          'X-Swell-Gorgias-Secret': secret!,
-          ...(req.publicKey ? { Authorization: req.publicKey } : {}),
-        },
-      },
-    ).catch(() => undefined);
-    req.context?.waitUntil?.(next);
+    callSync(req, state, { page: page + 1 });
   }
 
-  return { mode: 'backfill', page, processed: accounts.length, done, results };
+  return { mode: 'import', page, processed: accounts.length, done, results };
 }

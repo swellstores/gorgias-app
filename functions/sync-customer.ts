@@ -1,58 +1,67 @@
-import { clientFromSettings } from './lib/gorgias';
-import { syncAccountToGorgias } from './lib/sync-account';
+import { clientFromState, isAuthError, isConnected } from './lib/gorgias';
+import { loadState } from './lib/state';
+import {
+  changesContactDetails,
+  syncAccountToGorgias,
+} from './lib/sync-account';
 
+// The $or mirrors CONTACT_FIELDS in lib/sync-account.ts: updates that only
+// touch other fields (e.g. this app's own ticket writes) never fire.
 export const config: SwellConfig = {
   description:
-    'Push customer profile and recent orders to Gorgias when they change',
+    'Create or update the Gorgias customer when a Swell customer signs up, changes their contact details, or places an order',
   model: {
-    events: [
-      'account.created',
-      'account.updated',
-      'order.submitted',
-      'order.paid',
-      'order.canceled',
-      'order.refunded',
-      'order.delivered',
-      'shipment.created',
-      'shipment.updated',
-    ],
+    events: ['account.created', 'account.updated', 'order.submitted'],
     conditions: {
-      '$settings.sync.enabled': true,
+      $settings: { sync: { enabled: true } },
+      $or: [
+        { '$event.type': { $in: ['account.created', 'order.submitted'] } },
+        { '$event.data.email': { $exists: true } },
+        { '$event.data.name': { $exists: true } },
+        { '$event.data.first_name': { $exists: true } },
+        { '$event.data.last_name': { $exists: true } },
+        { '$event.data.phone': { $exists: true } },
+        { '$event.data.shipping': { $exists: true } },
+        { '$event.data.billing': { $exists: true } },
+      ],
     },
   },
 };
 
 export default async function (req: SwellRequest) {
-  const settings = await req.swell.settings();
+  const record = req.data;
+  if (!changesContactDetails(record?.$event)) {
+    return { skipped: 'no_contact_changes' };
+  }
+
+  const [settings, state] = await Promise.all([
+    req.swell.settings(),
+    loadState(req.swell),
+  ]);
   if (!settings?.sync?.enabled) {
     return { skipped: 'sync_disabled' };
   }
-
-  const record = req.data;
-  const eventType: string = record?.$event?.type || '';
-
-  let accountId: string | undefined;
-  if (eventType.startsWith('account.')) {
-    accountId = record.id;
-  } else if (eventType.startsWith('shipment.')) {
-    const order = record.order_id
-      ? await req.swell.get(`/orders/${record.order_id}`)
-      : null;
-    accountId = order?.account_id;
-  } else {
-    accountId = record.account_id;
+  if (!isConnected(state)) {
+    return { skipped: 'not_connected' };
   }
 
+  const accountId: string | undefined = String(
+    record?.$event?.type || '',
+  ).startsWith('account.')
+    ? record.id
+    : record.account_id;
   if (!accountId) {
     return { skipped: 'no_account' };
   }
 
-  const gorgias = clientFromSettings(settings);
-  return syncAccountToGorgias(
-    req.swell,
-    gorgias,
-    accountId,
-    req.store,
-    req.headers.get('swell-env'),
-  );
+  const gorgias = clientFromState(state);
+  try {
+    return await syncAccountToGorgias(req.swell, gorgias, accountId);
+  } catch (err) {
+    if (isAuthError(err)) {
+      console.error(`Gorgias refused the app's access: ${String(err)}`);
+      return { skipped: 'gorgias_auth_failed' };
+    }
+    throw err;
+  }
 }

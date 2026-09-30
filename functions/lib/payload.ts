@@ -1,10 +1,9 @@
-// Pure builders: Swell records → Gorgias customer_external_data JSON.
+// Pure builders: Swell records → the JSON the Gorgias sidebar widget renders.
 // The widget template (lib/provision.ts) renders paths from this shape.
 
 interface BuildInput {
   account: SwellData;
   orders?: SwellData[];
-  subscriptions?: SwellData[];
   store: { admin_url?: string };
   env?: string | null;
 }
@@ -57,7 +56,7 @@ export function buildOrderSummary(
   const tracking = (Array.isArray(shipments) ? shipments : [])
     .filter((s: SwellData) => s.tracking_code && !s.canceled)
     .map((s: SwellData) => ({
-      carrier: s.carrier_name || s.carrier || '',
+      carrier: s.carrier_name || s.carrier || 'Shipment',
       number: s.tracking_code,
     }));
 
@@ -65,9 +64,6 @@ export function buildOrderSummary(
     id: order.id,
     number: String(order.number ?? ''),
     status: orderStatusLabel(order),
-    paid: !!order.paid,
-    refunded: !!order.refunded,
-    delivered: !!order.delivered,
     date: formatDate(order.date_created),
     total: formatMoney(order.grand_total, order.currency),
     items,
@@ -77,32 +73,28 @@ export function buildOrderSummary(
 }
 
 export function buildCustomerData(input: BuildInput): SwellData {
-  const { account, orders = [], subscriptions = [], store, env } = input;
+  const { account, orders = [], store, env } = input;
   const adminUrl = adminBaseUrl(store, env);
 
   return {
     customer: {
       swell_id: account.id,
-      name:
-        account.name ||
-        [account.first_name, account.last_name].filter(Boolean).join(' '),
+      name: accountName(account) || account.email,
       email: account.email,
-      group: account.group || '',
       orders_count: account.order_count || 0,
       total_spent: formatMoney(account.order_value || 0, account.currency),
       since: formatDate(account.date_first_order || account.date_created),
       admin_url: adminUrl ? `${adminUrl}/customers/${account.id}` : '',
     },
     orders: orders.map((order) => buildOrderSummary(order, adminUrl)),
-    subscriptions: subscriptions.map((sub) => ({
-      id: sub.id,
-      product: sub.product_name || '',
-      plan: sub.plan_name || '',
-      status: String(sub.status || ''),
-      total: formatMoney(sub.recurring_total, sub.currency),
-      admin_url: adminUrl ? `${adminUrl}/subscriptions/${sub.id}` : '',
-    })),
   };
+}
+
+export function accountName(account: SwellData): string {
+  return (
+    account.name ||
+    [account.first_name, account.last_name].filter(Boolean).join(' ')
+  );
 }
 
 // Gorgias phone matching improves identity resolution (same trick as Shopify).

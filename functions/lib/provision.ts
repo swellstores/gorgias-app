@@ -1,43 +1,53 @@
 // Idempotent provisioning of Gorgias-side objects (HTTP integration + sidebar
-// widget). Objects are found by fixed name/app_id lookup so re-running connect
-// reconfigures instead of duplicating.
+// widget). The integration is found by the id saved from the last run, falling
+// back to the owner tag in its description, so re-running reconfigures instead
+// of duplicating. Nothing the app didn't create is modified or deleted.
 
 import { GorgiasClient } from './gorgias';
 
 export const INTEGRATION_NAME = 'Swell';
 
+// Bump when the integration or widget payload changes, so existing installs
+// re-provision on the next reconcile.
+export const TEMPLATE_VERSION = '3';
+
 export interface ProvisionOptions {
   eventsUrl: string;
-  sharedSecret: string;
+  eventsSecret: string;
+  // App public key; the gateway needs it to route calls to gorgias-events
+  publicKey: string;
+  // Identifies this store + environment's install (see ownerTag in connect.ts)
+  ownerTag: string;
   syncTicketUpdates: boolean;
-  // App public key; Swell's gateway requires it to route public function calls
-  publicKey?: string;
+  integrationId?: number | null;
 }
 
-// Ticket context arrives as query params (the documented Gorgias templating
-// pattern); the events function reads req.query.
-export function buildIntegrationPayload(options: ProvisionOptions): SwellData {
-  const url =
-    `${options.eventsUrl}?ticket_id={{ticket.id}}` +
-    `&email={{ticket.customer.email}}` +
-    `&external_id={{ticket.customer.external_id}}` +
-    `&subject={{ticket.subject}}` +
-    `&status={{ticket.status}}` +
-    `&channel={{ticket.channel}}`;
+// Ticket context goes in the JSON body (`form`): the gateway drops URL query
+// params whenever a request has a body. gorgias-events reads req.data.
+export const TICKET_FORM = {
+  ticket_id: '{{ticket.id}}',
+  email: '{{ticket.customer.email}}',
+  external_id: '{{ticket.customer.external_id}}',
+  subject: '{{ticket.subject}}',
+  status: '{{ticket.status}}',
+  channel: '{{ticket.channel}}',
+};
 
+export function buildIntegrationPayload(options: ProvisionOptions): SwellData {
   return {
     name: INTEGRATION_NAME,
+    description: `Managed by the Gorgias app in Swell (${options.ownerTag}). Changes made here are overwritten.`,
     type: 'http',
     http: {
-      url,
+      url: options.eventsUrl,
       method: 'POST',
       request_content_type: 'application/json',
       response_content_type: 'application/json',
       headers: {
-        'X-Swell-Gorgias-Secret': options.sharedSecret,
-        ...(options.publicKey ? { Authorization: options.publicKey } : {}),
+        'X-Swell-Gorgias-Secret': options.eventsSecret,
+        Authorization: options.publicKey,
       },
-      hmac_secret: options.sharedSecret,
+      form: TICKET_FORM,
       triggers: {
         'ticket-created': true,
         'ticket-updated': options.syncTicketUpdates,
@@ -46,47 +56,80 @@ export function buildIntegrationPayload(options: ProvisionOptions): SwellData {
   };
 }
 
-// Renders paths from the buildCustomerData() shape in lib/payload.ts.
+function textField(title: string, path: string, order: number) {
+  return { type: 'text', title, path, order };
+}
+
+// Renders paths from the buildCustomerData() shape in lib/payload.ts, using
+// Gorgias's documented layout: a root card, and lists of cards.
 export function buildWidgetTemplate(): SwellData {
   return {
     type: 'wrapper',
-    order: 0,
     widgets: [
       {
         type: 'card',
-        title: 'Swell customer',
+        title: 'Swell',
+        path: '',
         order: 0,
-        path: 'customer',
+        meta: { displayCard: true, link: '' },
         widgets: [
-          { type: 'text', title: 'Name', path: 'name', order: 0 },
-          { type: 'text', title: 'Orders', path: 'orders_count', order: 1 },
-          { type: 'text', title: 'Total spent', path: 'total_spent', order: 2 },
-          { type: 'text', title: 'Customer since', path: 'since', order: 3 },
           {
-            type: 'text',
-            title: 'Admin',
-            path: 'admin_url',
-            order: 4,
-            meta: { link: true },
+            type: 'card',
+            title: '{{name}}',
+            path: 'customer',
+            order: 0,
+            meta: { displayCard: true, link: '{{admin_url}}' },
+            widgets: [
+              textField('Email', 'email', 0),
+              textField('Orders', 'orders_count', 1),
+              textField('Total spent', 'total_spent', 2),
+              textField('Customer since', 'since', 3),
+            ],
           },
-        ],
-      },
-      {
-        type: 'list',
-        title: 'Recent orders',
-        order: 1,
-        path: 'orders',
-        widgets: [
-          { type: 'text', title: 'Order', path: 'number', order: 0 },
-          { type: 'text', title: 'Status', path: 'status', order: 1 },
-          { type: 'text', title: 'Date', path: 'date', order: 2 },
-          { type: 'text', title: 'Total', path: 'total', order: 3 },
           {
-            type: 'text',
-            title: 'Admin',
-            path: 'admin_url',
-            order: 4,
-            meta: { link: true },
+            type: 'list',
+            path: 'orders',
+            order: 1,
+            meta: { limit: '', orderBy: '' },
+            widgets: [
+              {
+                type: 'card',
+                title: 'Order {{number}} · {{status}}',
+                meta: { displayCard: true, link: '{{admin_url}}' },
+                widgets: [
+                  textField('Date', 'date', 0),
+                  textField('Total', 'total', 1),
+                  {
+                    type: 'list',
+                    path: 'items',
+                    order: 2,
+                    meta: { limit: '', orderBy: '' },
+                    widgets: [
+                      {
+                        type: 'card',
+                        title: '{{quantity}} × {{name}}',
+                        meta: { displayCard: true, link: '' },
+                        widgets: [textField('Price', 'price', 0)],
+                      },
+                    ],
+                  },
+                  {
+                    type: 'list',
+                    path: 'tracking',
+                    order: 3,
+                    meta: { limit: '', orderBy: '' },
+                    widgets: [
+                      {
+                        type: 'card',
+                        title: '{{carrier}}',
+                        meta: { displayCard: true, link: '' },
+                        widgets: [textField('Tracking number', 'number', 0)],
+                      },
+                    ],
+                  },
+                ],
+              },
+            ],
           },
         ],
       },
@@ -96,7 +139,6 @@ export function buildWidgetTemplate(): SwellData {
 
 // http-type widget: rendered from the JSON response of our HTTP integration
 // (gorgias-events), which fires on the integration's ticket triggers.
-// (customer_external_data + pushed data is OAuth-app-only — public phase.)
 export function buildWidgetPayload(integrationId: number): SwellData {
   return {
     type: 'http',
@@ -109,6 +151,32 @@ export function buildWidgetPayload(integrationId: number): SwellData {
 export interface ProvisionResult {
   integration: { id: number; created: boolean };
   widget: { id: number; created: boolean };
+  // Gorgias deactivated the integration (e.g. after repeated failures)
+  deactivated: boolean;
+}
+
+// Without a saved id, only adopt an integration that provably belongs to this
+// store and environment: its description carries this install's owner tag.
+// (Gorgias no longer returns integration headers, so the public key itself
+// can't be compared.) Test and live installs, or several stores sharing one
+// helpdesk, each keep their own.
+async function findOwnIntegration(
+  gorgias: GorgiasClient,
+  options: ProvisionOptions,
+): Promise<any | null> {
+  if (options.integrationId) {
+    const saved = await gorgias.getIntegration(options.integrationId);
+    if (saved?.type === 'http') return saved;
+  }
+  const integrations = await gorgias.listIntegrations();
+  return (
+    integrations.find(
+      (i) =>
+        i.type === 'http' &&
+        i.name === INTEGRATION_NAME &&
+        String(i.description || '').includes(options.ownerTag),
+    ) || null
+  );
 }
 
 export async function provision(
@@ -116,10 +184,7 @@ export async function provision(
   options: ProvisionOptions,
 ): Promise<ProvisionResult> {
   const integrationPayload = buildIntegrationPayload(options);
-  const integrations = await gorgias.listIntegrations();
-  const existingIntegration = integrations.find(
-    (i) => i.name === INTEGRATION_NAME && i.type === 'http',
-  );
+  const existingIntegration = await findOwnIntegration(gorgias, options);
 
   let integration: { id: number; created: boolean };
   if (existingIntegration) {
@@ -131,9 +196,14 @@ export async function provision(
   }
 
   const widgetPayload = buildWidgetPayload(integration.id);
-  const widgets = await gorgias.listWidgets();
+  const widgets = integration.created
+    ? []
+    : await gorgias.listWidgets(integration.id);
   const existingWidget = widgets.find(
-    (w) => w.type === 'http' && w.integration_id === integration.id,
+    (w) =>
+      w.type === 'http' &&
+      w.context === 'ticket' &&
+      w.integration_id === integration.id,
   );
 
   let widget: { id: number; created: boolean };
@@ -145,14 +215,9 @@ export async function provision(
     widget = { id: created.id, created: true };
   }
 
-  // Remove the stale push-model widget from earlier installs (its data source
-  // is unusable without OAuth).
-  const stale = widgets.find(
-    (w) => w.type === 'customer_external_data' && w.context === 'ticket',
-  );
-  if (stale) {
-    await gorgias.deleteWidget(stale.id).catch(() => undefined);
-  }
-
-  return { integration, widget };
+  return {
+    integration,
+    widget,
+    deactivated: !!existingIntegration?.deactivated_datetime,
+  };
 }

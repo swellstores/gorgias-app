@@ -1,9 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
   timingSafeEqual,
-  verifySharedSecret,
-  hmacSha256Hex,
-  verifyGorgiasHmac,
+  verifySecretHeader,
+  randomHex,
+  sha256Hex,
 } from '../../functions/lib/auth';
 
 describe('timingSafeEqual', () => {
@@ -17,47 +17,37 @@ describe('timingSafeEqual', () => {
   });
 });
 
-describe('verifySharedSecret', () => {
+describe('verifySecretHeader', () => {
   const secret = 'abc123';
-  it('accepts the secret via header', () => {
-    const req = {
-      headers: new Headers({ 'X-Swell-Gorgias-Secret': secret }),
-      query: {},
-    };
-    expect(verifySharedSecret(req, secret)).toBe(true);
-  });
-  it('accepts the secret via ?key=', () => {
-    const req = { headers: new Headers(), query: { key: secret } };
-    expect(verifySharedSecret(req, secret)).toBe(true);
-  });
-  it('accepts the secret via data.key (gateway $call.data path)', () => {
-    const req = { headers: new Headers(), query: {}, data: { key: secret } };
-    expect(verifySharedSecret(req, secret)).toBe(true);
+  it('accepts the secret via the X-Swell-Gorgias-Secret header', () => {
+    const headers = new Headers({ 'X-Swell-Gorgias-Secret': secret });
+    expect(verifySecretHeader(headers, secret)).toBe(true);
   });
   it('rejects wrong or missing secrets', () => {
     expect(
-      verifySharedSecret({ headers: new Headers(), query: { key: 'nope' } }, secret),
+      verifySecretHeader(new Headers({ 'X-Swell-Gorgias-Secret': 'nope' }), secret),
     ).toBe(false);
-    expect(verifySharedSecret({ headers: new Headers(), query: {} }, secret)).toBe(false);
+    expect(verifySecretHeader(new Headers(), secret)).toBe(false);
   });
   it('rejects everything when no secret is configured', () => {
-    const req = { headers: new Headers(), query: { key: '' } };
-    expect(verifySharedSecret(req, undefined)).toBe(false);
-    expect(verifySharedSecret(req, '')).toBe(false);
+    const headers = new Headers({ 'X-Swell-Gorgias-Secret': '' });
+    expect(verifySecretHeader(headers, undefined)).toBe(false);
+    expect(verifySecretHeader(headers, '')).toBe(false);
   });
 });
 
-describe('verifyGorgiasHmac', () => {
-  it('verifies a valid signature', async () => {
-    const body = '{"ticket":1}';
-    const sig = await hmacSha256Hex('topsecret', body);
-    expect(await verifyGorgiasHmac(body, sig, 'topsecret')).toBe(true);
-    expect(await verifyGorgiasHmac(body, sig.toUpperCase(), 'topsecret')).toBe(true);
+describe('randomHex', () => {
+  it('returns unique hex strings of the requested byte length', () => {
+    const a = randomHex(24);
+    expect(a).toMatch(/^[0-9a-f]{48}$/);
+    expect(randomHex(24)).not.toBe(a);
   });
-  it('rejects a bad signature', async () => {
-    expect(await verifyGorgiasHmac('{"a":1}', 'deadbeef', 'topsecret')).toBe(false);
-  });
-  it('passes when no signature header is present', async () => {
-    expect(await verifyGorgiasHmac('body', null, 'topsecret')).toBe(true);
+});
+
+describe('sha256Hex', () => {
+  it('hashes like SHA-256', async () => {
+    expect(await sha256Hex('abc')).toBe(
+      'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad',
+    );
   });
 });

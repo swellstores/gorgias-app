@@ -1,5 +1,5 @@
 {
-  "description": "Gorgias helpdesk integration: ticket context, sidebar data and actions",
+  "description": "Gorgias helpdesk integration: Swell orders in the ticket sidebar, tickets on customers",
   "devDependencies": {
     "@swell/app-types": "^1.2.0",
     "typescript": "^5.9.3",

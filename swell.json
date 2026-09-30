@@ -1,5 +1,5 @@
 {
-	"description": "Gorgias helpdesk integration: ticket context, sidebar data and actions",
+	"description": "Swell customers and recent orders in Gorgias, open tickets in Swell",
 	"id": "gorgias",
 	"name": "Gorgias",
 	"type": "integration",
@@ -9,34 +9,31 @@
 		"read_accounts",
 		"write_accounts",
 		"read_orders",
-		"write_orders",
-		"read_shipments",
-		"read_subscriptions",
-		"read_carts"
+		"read_shipments"
 	],
 	"images": [
 		{
 			"id": "ticket-sidebar",
-			"title": "Swell orders beside every ticket",
-			"description": "When a ticket arrives, the Gorgias sidebar shows the customer's Swell profile and latest orders, each linked to your dashboard.",
+			"title": "Swell orders beside the ticket",
+			"description": "When a Swell customer writes in, the Gorgias sidebar shows their profile and five latest orders, with items, tracking and links to Swell.",
 			"image_src": "assets/screenshots/1-ticket-sidebar.png"
 		},
 		{
 			"id": "swell-support",
-			"title": "Support history in Swell",
-			"description": "Each customer gets a Support tab with open tickets and their latest conversation, and the customer list shows who's waiting.",
+			"title": "Open tickets in Swell",
+			"description": "Each customer gets a Support tab with their open ticket count and latest ticket, and the customer list gets an Open tickets column.",
 			"image_src": "assets/screenshots/2-swell-support.png"
 		},
 		{
 			"id": "customer-sync",
 			"title": "Customers synced to Gorgias",
-			"description": "Customers are created in Gorgias with name, email and phone, linked to Swell, and kept current as orders are placed and shipped.",
+			"description": "With sync on, customers are created in Gorgias with name, email and phone, linked to Swell, and updated as their details change.",
 			"image_src": "assets/screenshots/3-customer-sync.png"
 		},
 		{
 			"id": "setup",
-			"title": "Connected in minutes",
-			"description": "Enter your Gorgias details and connect once. The integration and sidebar widget are created in Gorgias for you.",
+			"title": "One-click connect",
+			"description": "Enter your Gorgias subdomain, click Connect and approve access in Gorgias. The app sets up the integration and sidebar widget for you.",
 			"image_src": "assets/screenshots/4-setup.png"
 		}
 	]

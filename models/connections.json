@@ -1,0 +1,129 @@
+{
+  "label": "Gorgias connections",
+  "description": "Internal state for the Gorgias connection: OAuth tokens (written by the app's frontend Worker when the merchant connects), generated secrets, provisioned Gorgias ids and customer import progress. The app keeps a single record.",
+  "fields": {
+    "gorgias_subdomain": {
+      "type": "string",
+      "description": "Helpdesk the merchant authorized (the acme in acme.gorgias.com)"
+    },
+    "access_token": {
+      "type": "string",
+      "private": true,
+      "description": "Gorgias OAuth access token (24 hours). Renewed by reconcile through the Worker"
+    },
+    "refresh_token": {
+      "type": "string",
+      "private": true,
+      "description": "Gorgias OAuth refresh token. Only the Worker can use it, since refreshing needs the client secret"
+    },
+    "token_expires_at": {
+      "type": "date"
+    },
+    "token_scope": {
+      "type": "string"
+    },
+    "refresh_key": {
+      "type": "string",
+      "private": true,
+      "description": "Per-store key the Worker issued at connect; authorizes token refresh requests"
+    },
+    "oauth_store_id": {
+      "type": "string"
+    },
+    "oauth_env": {
+      "type": "string"
+    },
+    "oauth_service_url": {
+      "type": "string",
+      "description": "Public URL of the app's Worker, which refreshes tokens"
+    },
+    "date_authorized": {
+      "type": "date",
+      "description": "When the merchant last authorized the app in Gorgias. A new authorization re-provisions"
+    },
+    "oauth_nonce_hash": {
+      "type": "string",
+      "private": true,
+      "description": "Hash of the one-time nonce for a connection in progress"
+    },
+    "oauth_subdomain": {
+      "type": "string",
+      "description": "Helpdesk for the connection in progress"
+    },
+    "oauth_user_id": {
+      "type": "string",
+      "description": "Dashboard user who started the connection in progress"
+    },
+    "oauth_expires": {
+      "type": "date"
+    },
+    "oauth_error": {
+      "type": "string",
+      "description": "Why the last connection attempt didn't finish, shown on the Connect page"
+    },
+    "events_secret": {
+      "type": "string",
+      "private": true,
+      "description": "Generated secret Gorgias sends in the X-Swell-Gorgias-Secret header when calling gorgias-events"
+    },
+    "internal_secret": {
+      "type": "string",
+      "private": true,
+      "description": "Generated secret the app's own functions send when calling the sync function. Never leaves Swell"
+    },
+    "fingerprint": {
+      "type": "string",
+      "description": "Hash of the settings and URLs the Gorgias integration was last provisioned with. A change triggers re-provisioning"
+    },
+    "integration_id": {
+      "type": "int",
+      "description": "Id of the Gorgias HTTP integration this app created"
+    },
+    "widget_id": {
+      "type": "int",
+      "description": "Id of the Gorgias ticket sidebar widget this app created"
+    },
+    "gorgias_account": {
+      "type": "string",
+      "description": "Gorgias helpdesk domain the app is connected to"
+    },
+    "last_error": {
+      "type": "string",
+      "description": "Most recent connection error, cleared on success"
+    },
+    "last_attempt_fingerprint": {
+      "type": "string",
+      "description": "Fingerprint of the last connection attempt, used to back off after a failure"
+    },
+    "date_last_attempt": {
+      "type": "date"
+    },
+    "date_connected": {
+      "type": "date",
+      "description": "When the current settings were first provisioned successfully"
+    },
+    "date_checked": {
+      "type": "date",
+      "description": "When the connection was last verified against Gorgias"
+    },
+    "backfill_subdomain": {
+      "type": "string",
+      "description": "Gorgias subdomain the customer import ran for. A different subdomain starts a new import"
+    },
+    "backfill_page": {
+      "type": "int",
+      "description": "Next page of customers to import"
+    },
+    "backfill_done": {
+      "type": "bool"
+    },
+    "backfill_synced": {
+      "type": "int",
+      "description": "Customers imported so far"
+    },
+    "date_backfill_updated": {
+      "type": "date",
+      "description": "Last progress on the import. The reconcile function restarts a stalled import from backfill_page"
+    }
+  }
+}

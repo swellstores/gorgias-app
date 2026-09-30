@@ -1,129 +1,115 @@
-import {
-  requestParams,
-  verifyGorgiasHmac,
-  verifySharedSecret,
-} from './lib/auth';
+import { verifySecretHeader } from './lib/auth';
+import { callSync } from './lib/connect';
+import { loadState } from './lib/state';
 import { loadAccountData } from './lib/sync-account';
-import { functionUrl } from './lib/urls';
 
 export const config: SwellConfig = {
   description:
-    'Receives Gorgias ticket events: records ticket refs on Swell accounts and returns the customer payload rendered by the Gorgias sidebar widget',
+    'Receives Gorgias ticket events: records the ticket on the Swell customer and returns the data the Gorgias sidebar widget renders',
   route: {
     public: true,
+    methods: ['post'],
+    headers: ['x-swell-gorgias-secret'],
   },
 };
 
 const MAX_TICKETS = 20;
+const OBJECT_ID = /^[0-9a-f]{24}$/;
 
-// Gorgias allows 5s for this call. The JSON response is the data source for
+function field(value: unknown): string {
+  return value === undefined || value === null ? '' : String(value).trim();
+}
+
+// Gorgias allows 5s for this call, so the response is built first and the
+// ticket write runs after it returns. The JSON response is the data source for
 // the http-type sidebar widget (customer profile + recent orders).
 export default async function (req: SwellRequest) {
-  const settings = await req.swell.settings();
-  const secret: string | undefined = settings?.connection?.shared_secret;
+  const [state, settings] = await Promise.all([
+    loadState(req.swell),
+    req.swell.settings(),
+  ]);
 
-  if (!verifySharedSecret(req, secret)) {
+  if (!verifySecretHeader(req.headers, state.events_secret)) {
     return new SwellResponse({ error: 'unauthorized' }, { status: 401 });
   }
-  const signature =
-    req.headers.get('x-gorgias-signature') ||
-    req.headers.get('x-hub-signature-256');
-  if (!(await verifyGorgiasHmac(req.rawBody || '', signature, secret!))) {
-    return new SwellResponse({ error: 'invalid signature' }, { status: 401 });
-  }
 
-  const { ticket_id, email, external_id, subject, status, channel } =
-    requestParams(req);
-  if (!ticket_id) {
-    return { ok: true, skipped: 'no_ticket', customer: null };
+  // Ticket fields arrive as the integration's JSON body (see TICKET_FORM).
+  const params: SwellData = req.data || {};
+  const ticketId = field(params.ticket_id);
+  if (!ticketId) {
+    return { ok: true, skipped: 'no_ticket', customer: null, orders: [] };
   }
+  const email = field(params.email).toLowerCase();
+  const externalId = field(params.external_id);
+  const linked = OBJECT_ID.test(externalId);
 
-  // Resolve the Swell account: external_id is the Swell account id when the
-  // Gorgias customer has been synced; otherwise fall back to email match.
+  // external_id is the Swell account id once the Gorgias customer has been
+  // synced; otherwise fall back to an email match.
   let account: SwellData | null = null;
-  if (external_id) {
-    account = await req.swell
-      .get(`/accounts/${external_id}`, { $app: true })
-      .catch(() => null);
+  if (linked) {
+    account = await req.swell.get(`/accounts/${externalId}`).catch(() => null);
   }
   if (!account && email) {
     const res = await req.swell.get('/accounts', {
-      where: { email: String(email).toLowerCase() },
+      where: { email },
       limit: 1,
-      $app: true,
     });
     account = res?.results?.[0] || null;
   }
   if (!account) {
-    return { ok: true, skipped: 'no_matching_account', customer: null };
+    return { ok: true, skipped: 'no_matching_account', customer: null, orders: [] };
   }
 
-  const subdomain = settings?.connection?.subdomain;
-  const appId = req.appId || 'gorgias';
+  const appId = req.appId;
   const existing: SwellData[] = account.$app?.[appId]?.tickets || [];
-
   const entry = {
-    id: String(ticket_id),
-    subject: subject || '',
-    status: status || '',
-    channel: channel || '',
-    url: subdomain
-      ? `https://${subdomain}.gorgias.com/app/ticket/${ticket_id}`
+    id: ticketId,
+    subject: field(params.subject),
+    status: field(params.status),
+    channel: field(params.channel),
+    url: state.gorgias_account
+      ? `https://${state.gorgias_account}/app/ticket/${ticketId}`
       : '',
     date_updated: new Date().toISOString(),
   };
-
   const tickets = [
     entry,
     ...existing.filter((t) => String(t.id) !== entry.id),
   ].slice(0, MAX_TICKETS);
 
-  // Arrays under $app merge positionally on write — null first to replace.
-  await req.swell.put(
-    `/accounts/${account.id}`,
-    req.appValues({ tickets: null }),
-  );
-  await req.swell.put(
-    `/accounts/${account.id}`,
-    req.appValues({
-      tickets,
-      open_ticket_count: tickets.filter((t) => t.status === 'open').length,
-      last_ticket_subject: entry.subject,
-      last_ticket_url: entry.url,
-      last_ticket_at: entry.date_updated,
-    }),
-  );
-
-  // First contact from a customer Gorgias doesn't know yet: enrich their
-  // Gorgias identity (external_id, phone) fire-and-forget to stay under the
-  // 5s response budget.
-  if (!external_id && settings?.sync?.enabled) {
-    const refresh = fetch(
-      `${functionUrl(req.store, appId, 'sync')}?account_id=${account.id}`,
-      {
-        method: 'post',
-        headers: {
-          'X-Swell-Gorgias-Secret': secret!,
-          ...(req.publicKey ? { Authorization: req.publicKey } : {}),
+  // $set replaces the stored array instead of merging into it. Runs alongside
+  // the sidebar lookup and is awaited, so a failure reaches the function log.
+  const write = req.swell
+    .put(
+      `/accounts/${account.id}`,
+      req.appValues({
+        $set: {
+          tickets,
+          open_ticket_count: tickets.filter((t) => t.status === 'open').length,
+          last_ticket_subject: entry.subject,
+          last_ticket_url: entry.url,
+          last_ticket_at: entry.date_updated,
         },
-      },
-    ).catch(() => undefined);
-    req.context?.waitUntil?.(refresh);
+      }),
+    )
+    .catch((err: unknown) =>
+      console.error(`Could not record ticket ${ticketId}: ${String(err)}`),
+    );
+
+  // First contact from a customer Gorgias doesn't know yet: link their Gorgias
+  // identity (external_id, phone) in the background.
+  if (!linked && settings?.sync?.enabled) {
+    callSync(req, state, { account_id: account.id });
   }
 
-  // The response body is the widget's data source.
-  const { data } = await loadAccountData(
-    req.swell,
-    account.id,
-    req.store,
-    req.headers.get('swell-env'),
-  );
+  const [data] = await Promise.all([
+    loadAccountData(req.swell, account, req.store, req.headers.get('swell-env')),
+    write,
+  ]);
   return {
     ok: true,
     account_id: account.id,
-    ticket_count: tickets.length,
-    customer: data?.customer || null,
-    orders: data?.orders || [],
-    subscriptions: data?.subscriptions || [],
+    customer: data.customer,
+    orders: data.orders,
   };
 }

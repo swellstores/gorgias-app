@@ -1,117 +1,96 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { createMockRequest } from '../helpers/mock-request';
 import handler from '../../functions/sync';
+import {
+  INTERNAL_SECRET,
+  connectedState,
+  createAppRequest,
+  createFakeSwell,
+  mockFetch,
+} from '../helpers/fakes';
 
 const settings = {
-  connection: {
-    subdomain: 'acme',
-    email: 'agent@acme.com',
-    api_key: 'k',
-    shared_secret: 'shh',
-  },
   sync: { enabled: true, backfill_limit: '4' },
 };
+const auth = { 'X-Swell-Gorgias-Secret': INTERNAL_SECRET };
+const accounts = [
+  { id: 'a1', email: 'a1@x.co' },
+  { id: 'a2', email: 'a2@x.co' },
+  { id: 'a3', email: 'a3@x.co' },
+  { id: 'a4', email: 'a4@x.co' },
+  { id: 'a5', email: 'a5@x.co' },
+];
 
-// One synced account = 4 Gorgias calls: find customer, update, get data, put data
-function gorgiasResponses(fetchMock: ReturnType<typeof vi.fn>) {
-  fetchMock.mockImplementation(async (url: string, init: RequestInit) => {
-    if (url.includes('gorgias.com')) {
-      if (url.includes('/api/customers?') || url.endsWith('email=&limit=1')) {
-        return new Response(JSON.stringify({ data: [{ id: 9 }] }), { status: 200 });
-      }
-      if (url.includes('/data')) {
-        return new Response(
-          JSON.stringify(init?.method === 'PUT' ? { ok: true } : { version: 'v1' }),
-          { status: 200 },
-        );
-      }
-      return new Response(JSON.stringify({ id: 9 }), { status: 200 });
-    }
-    // self-chain call
-    return new Response('{}', { status: 200 });
+function setup(data: SwellData, stateOverrides: SwellData = {}, list = accounts) {
+  const { calls } = mockFetch();
+  const { swell, db } = createFakeSwell({
+    settings,
+    state: connectedState({
+      internal_secret: INTERNAL_SECRET,
+      backfill_page: 1,
+      backfill_done: false,
+      backfill_synced: 0,
+      ...stateOverrides,
+    }),
+    accounts: list,
   });
-}
-
-function makeRequest(query: Record<string, string>, accounts: SwellData[]) {
-  const fetchMock = vi.fn();
-  gorgiasResponses(fetchMock);
-  vi.stubGlobal('fetch', fetchMock);
-  const req = createMockRequest({
-    query,
-    store: { url: 'https://store.example.com', admin_url: 'https://admin.example.com' },
-    swell: {
-      settings: vi.fn().mockResolvedValue(settings),
-      get: vi.fn().mockImplementation(async (url: string) => {
-        if (url === '/accounts') return { results: accounts };
-        if (url.startsWith('/accounts/')) {
-          const id = url.split('/')[2];
-          return accounts.find((a) => a.id === id) || { id, email: `${id}@x.co` };
-        }
-        if (url === '/orders' || url === '/subscriptions') return { results: [] };
-        return {};
-      }),
-    },
-  });
-  return { req, fetchMock };
+  return { req: createAppRequest({ swell, data, headers: auth }), db, calls };
 }
 
 describe('sync function', () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it('rejects without the shared secret', async () => {
-    const { req } = makeRequest({}, []);
-    const res = (await handler(req)) as Response;
+  it('rejects without the internal secret header', async () => {
+    const { swell } = createFakeSwell({ settings, state: { internal_secret: INTERNAL_SECRET } });
+    const res = (await handler(createAppRequest({ swell, data: { page: 1 } }))) as Response;
     expect(res.status).toBe(401);
   });
 
-  it('refresh mode syncs a single account', async () => {
-    const { req } = makeRequest(
-      { key: 'shh', account_id: 'acc1' },
-      [{ id: 'acc1', email: 'a@x.co' }],
-    );
+  it('refresh mode syncs a single account with the OAuth token', async () => {
+    const { req, calls } = setup({ account_id: 'a1' });
     const result = (await handler(req)) as SwellData;
-    expect(result.mode).toBe('refresh');
-    expect(result.synced).toBe(true);
+    expect(result).toMatchObject({ mode: 'refresh', synced: true, gorgias_customer_id: 9 });
+    const created = calls.find((c) => c.method === 'POST' && c.url.endsWith('/api/customers'))!;
+    expect(created.headers.Authorization).toBe('Bearer gorgias-access-token');
   }, 20000);
 
-  it('backfill chains to the next page when the batch is full', async () => {
-    const { req, fetchMock } = makeRequest(
-      { key: 'shh', page: '1' },
-      [
-        { id: 'a1', email: 'a1@x.co' },
-        { id: 'a2', email: 'a2@x.co' },
-      ],
-    );
+  it('skips when Gorgias is not connected', async () => {
+    const { req, calls } = setup({ account_id: 'a1' }, { access_token: null, refresh_token: null });
     const result = (await handler(req)) as SwellData;
-    expect(result.mode).toBe('backfill');
-    expect(result.processed).toBe(2);
-    expect(result.done).toBe(false);
-    const chain = fetchMock.mock.calls.find(([u]: [string]) =>
-      String(u).includes('/functions/gorgias/sync?page=2'),
-    );
-    expect(chain).toBeTruthy();
-    expect(chain![1].headers['X-Swell-Gorgias-Secret']).toBe('shh');
+    expect(result.skipped).toBe('not_connected');
+    expect(calls).toHaveLength(0);
+  });
+
+  it('imports the expected page, saves progress and chains to the next', async () => {
+    const { req, db, calls } = setup({ page: 1 });
+    const result = (await handler(req)) as SwellData;
+    expect(result).toMatchObject({ mode: 'import', processed: 2, done: false });
+    expect(db.state).toMatchObject({ backfill_page: 2, backfill_done: false, backfill_synced: 2 });
+    const chain = calls.find((c) => c.url.includes('/functions/gorgias/sync'))!;
+    expect(chain.url).toBe('https://teststore.swell.store/functions/gorgias/sync');
+    expect(chain.body).toEqual({ page: 2 });
+    expect(chain.headers['x-swell-gorgias-secret']).toBe(INTERNAL_SECRET);
   }, 20000);
 
-  it('backfill stops at the configured limit and on short pages', async () => {
-    const { req, fetchMock } = makeRequest(
-      { key: 'shh', page: '2' }, // limit 4, batch 2 → page 2 is the last
-      [
-        { id: 'a3', email: 'a3@x.co' },
-        { id: 'a4', email: 'a4@x.co' },
-      ],
-    );
+  it('stops at the configured limit', async () => {
+    // limit 4, batch 2 → page 2 is the last
+    const { req, db, calls } = setup({ page: 2 }, { backfill_page: 2, backfill_synced: 2 });
     const result = (await handler(req)) as SwellData;
     expect(result.done).toBe(true);
-    const chain = fetchMock.mock.calls.find(([u]: [string]) =>
-      String(u).includes('sync?page='),
-    );
-    expect(chain).toBeUndefined();
-
-    const short = makeRequest({ key: 'shh', page: '1' }, [
-      { id: 'a1', email: 'a1@x.co' },
-    ]);
-    const shortResult = (await handler(short.req)) as SwellData;
-    expect(shortResult.done).toBe(true);
+    expect(db.state).toMatchObject({ backfill_done: true, backfill_synced: 4 });
+    expect(calls.some((c) => c.url.includes('/functions/gorgias/sync'))).toBe(false);
   }, 20000);
+
+  it('stops on a short page', async () => {
+    const { req, db } = setup({ page: 1 }, {}, [accounts[0]]);
+    const result = (await handler(req)) as SwellData;
+    expect(result.done).toBe(true);
+    expect(db.state!.backfill_done).toBe(true);
+  }, 20000);
+
+  it('skips pages that are not the expected next page', async () => {
+    const { req, calls } = setup({ page: 1 }, { backfill_page: 3 });
+    const result = (await handler(req)) as SwellData;
+    expect(result.skipped).toBe('stale_page');
+    expect(calls).toHaveLength(0);
+  });
 });

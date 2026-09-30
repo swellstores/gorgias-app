@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json.swell.store/content.json",
+  "collection": "connections",
+  "fields": [],
+  "views": [
+    {
+      "id": "list",
+      "nav": {
+        "label": "Gorgias",
+        "link": "frontend://"
+      }
+    }
+  ]
+}

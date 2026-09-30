@@ -36,6 +36,7 @@ const order = {
       { tracking_code: '1Z999', carrier_name: 'UPS' },
       { tracking_code: 'XX', carrier: 'usps', canceled: true },
       { carrier: 'fedex' },
+      { tracking_code: 'NOCARRIER' },
     ],
   },
 };
@@ -59,7 +60,10 @@ describe('buildOrderSummary', () => {
       { name: 'Blue Mug', quantity: 2, price: '40.00 USD' },
       { name: 'Red Mug', quantity: 1, price: '49.00 USD' },
     ]);
-    expect(result.tracking).toEqual([{ carrier: 'UPS', number: '1Z999' }]);
+    expect(result.tracking).toEqual([
+      { carrier: 'UPS', number: '1Z999' },
+      { carrier: 'Shipment', number: 'NOCARRIER' },
+    ]);
     expect(result.admin_url).toBe('https://admin.example.com/admin/orders/ord1');
   });
   it('reports canceled status', () => {
@@ -68,19 +72,10 @@ describe('buildOrderSummary', () => {
 });
 
 describe('buildCustomerData', () => {
-  it('builds the full customer payload', () => {
+  it('builds the customer and orders payload', () => {
     const data = buildCustomerData({
       account,
       orders: [order],
-      subscriptions: [
-        {
-          id: 'sub1',
-          product_name: 'Coffee Club',
-          status: 'active',
-          recurring_total: 25,
-          currency: 'USD',
-        },
-      ],
       store: { admin_url: 'https://admin.example.com/' },
     });
     expect(data.customer).toMatchObject({
@@ -93,19 +88,15 @@ describe('buildCustomerData', () => {
       admin_url: 'https://admin.example.com/admin/customers/acc1',
     });
     expect(data.orders).toHaveLength(1);
-    expect(data.subscriptions[0]).toMatchObject({
-      product: 'Coffee Club',
-      status: 'active',
-      total: '25.00 USD',
-    });
+    expect(data).not.toHaveProperty('subscriptions');
   });
-  it('tolerates empty inputs', () => {
+  it('tolerates empty inputs and falls back to the email as the name', () => {
     const data = buildCustomerData({
       account: { id: 'a', email: 'x@y.z' },
       store: {},
     });
     expect(data.orders).toEqual([]);
-    expect(data.subscriptions).toEqual([]);
+    expect(data.customer.name).toBe('x@y.z');
     expect(data.customer.admin_url).toBe('');
   });
 });

@@ -1,7 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { GorgiasClient, GorgiasError, clientFromSettings } from '../../functions/lib/gorgias';
+import {
+  GorgiasClient,
+  clientFromState,
+  customerCreateBody,
+  customerUpdateBody,
+  isConnected,
+} from '../../functions/lib/gorgias';
 
-const auth = { subdomain: 'acme', email: 'agent@acme.com', apiKey: 'key123' };
+const auth = { subdomain: 'acme', accessToken: 'token123' };
 
 function jsonResponse(body: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(body), {
@@ -22,15 +28,13 @@ describe('GorgiasClient', () => {
     vi.unstubAllGlobals();
   });
 
-  it('sends Basic auth to the subdomain base URL', async () => {
+  it('sends the OAuth bearer token to the subdomain base URL', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ id: 1 }));
     const client = new GorgiasClient(auth);
     await client.get('/api/account');
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe('https://acme.gorgias.com/api/account');
-    expect(init.headers.Authorization).toBe(
-      `Basic ${btoa('agent@acme.com:key123')}`,
-    );
+    expect(init.headers.Authorization).toBe('Bearer token123');
   });
 
   it('retries on 429 honoring Retry-After', async () => {
@@ -45,19 +49,21 @@ describe('GorgiasClient', () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
-  it('follows a 301 to the merged customer', async () => {
+  it('follows a relative 301 to the merged customer', async () => {
     fetchMock
       .mockResolvedValueOnce(
         new Response('', {
           status: 301,
-          headers: { Location: 'https://acme.gorgias.com/api/customers/99' },
+          headers: { Location: '/api/customers/99' },
         }),
       )
       .mockResolvedValueOnce(jsonResponse({ id: 99 }));
     const client = new GorgiasClient(auth);
     const result = await client.get('/api/customers/12');
     expect(result).toEqual({ id: 99 });
-    expect(fetchMock.mock.calls[1][0]).toContain('/api/customers/99');
+    expect(fetchMock.mock.calls[1][0]).toBe(
+      'https://acme.gorgias.com/api/customers/99',
+    );
   });
 
   it('throws GorgiasError with status and body on failure', async () => {
@@ -71,84 +77,169 @@ describe('GorgiasClient', () => {
     });
   });
 
-  it('upsertCustomer updates when found, creates when missing', async () => {
+  it('upsertCustomer looks up by external_id first and updates', async () => {
     fetchMock
-      .mockResolvedValueOnce(jsonResponse({ data: [{ id: 5 }] }))
+      .mockResolvedValueOnce(jsonResponse({ data: [{ id: 5, channels: [] }] }))
       .mockResolvedValueOnce(jsonResponse({ id: 5 }));
     const client = new GorgiasClient(auth);
-    await client.upsertCustomer({ email: 'a@b.c', external_id: 'acc1' });
+    await client.upsertCustomer({
+      email: 'a@b.c',
+      name: 'Ann Bee',
+      external_id: '64f1c2a9e3b7d10012a4f5c1',
+    });
+    expect(fetchMock.mock.calls[0][0]).toContain(
+      'external_id=64f1c2a9e3b7d10012a4f5c1',
+    );
     expect(fetchMock.mock.calls[1][0]).toContain('/api/customers/5');
     expect(fetchMock.mock.calls[1][1].method).toBe('PUT');
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toMatchObject({
+      name: 'Ann Bee',
+      email: 'a@b.c',
+    });
+  }, 10000);
 
-    fetchMock.mockReset();
+  it('upsertCustomer falls back to email, then creates with an email channel', async () => {
     fetchMock
-      .mockResolvedValueOnce(jsonResponse({ data: [] }))
+      .mockResolvedValueOnce(jsonResponse({ data: [] })) // external_id miss
+      .mockResolvedValueOnce(jsonResponse({ data: [] })) // email miss
       .mockResolvedValueOnce(jsonResponse({ id: 6 }));
-    await client.upsertCustomer({ email: 'new@b.c' });
-    expect(fetchMock.mock.calls[1][1].method).toBe('POST');
-  });
-
-  it('putCustomerData writes with a timestamp version, no GET', async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true }));
     const client = new GorgiasClient(auth);
-    const result = await client.putCustomerData(5, { customer: {} });
-    expect(result).toEqual({ ok: true });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toContain('/api/customers/5/data');
-    expect(init.method).toBe('PUT');
-    expect(JSON.parse(init.body).version).toMatch(/^\d{4}-\d{2}-\d{2}T/);
-  });
+    await client.upsertCustomer({
+      email: 'new@b.c',
+      external_id: '64f1c2a9e3b7d10012a4f5c1',
+      phone: '+15551234567',
+    });
+    expect(fetchMock.mock.calls[1][0]).toContain('email=new%40b.c');
+    const [, init] = fetchMock.mock.calls[2];
+    expect(init.method).toBe('POST');
+    expect(JSON.parse(init.body).channels).toEqual([
+      { type: 'email', address: 'new@b.c', preferred: true },
+      { type: 'phone', address: '+15551234567' },
+    ]);
+  }, 10000);
 
-  it('upsertCustomer falls back to external_id lookup on create conflict', async () => {
+  it('upsertCustomer recovers from a create conflict via the email channel', async () => {
     fetchMock
-      .mockResolvedValueOnce(jsonResponse({ data: [] })) // email search: miss
+      .mockResolvedValueOnce(jsonResponse({ data: [] })) // email miss (no external_id)
       .mockResolvedValueOnce(
         jsonResponse({ error: { msg: 'already exists' } }, { status: 409 }),
-      ) // POST create conflict
-      .mockResolvedValueOnce(jsonResponse({ data: [{ id: 42 }] })) // external_id lookup
-      .mockResolvedValueOnce(jsonResponse({ id: 42 })); // PUT update
+      )
+      .mockResolvedValueOnce(jsonResponse({ data: [{ id: 42 }] }))
+      .mockResolvedValueOnce(jsonResponse({ id: 42 }));
+    const client = new GorgiasClient(auth);
+    const result = await client.upsertCustomer({ email: 'a@b.c' });
+    expect(result).toEqual({ id: 42 });
+    expect(fetchMock.mock.calls[2][0]).toContain('channel_address=a%40b.c');
+    expect(fetchMock.mock.calls[3][1].method).toBe('PUT');
+  }, 10000);
+
+  it('fetches the full customer before adding a phone to a list match', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ data: [{ id: 5 }] })) // external_id hit, no channels
+      .mockResolvedValueOnce(
+        jsonResponse({
+          id: 5,
+          channels: [{ type: 'email', address: 'a@b.c', preferred: true }],
+        }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ id: 5 }));
+    const client = new GorgiasClient(auth);
+    await client.upsertCustomer({
+      email: 'a@b.c',
+      external_id: '64f1c2a9e3b7d10012a4f5c1',
+      phone: '+15551234567',
+    });
+    expect(fetchMock.mock.calls[1][0]).toBe('https://acme.gorgias.com/api/customers/5');
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body).channels).toEqual([
+      { type: 'email', address: 'a@b.c', preferred: true },
+      { type: 'phone', address: '+15551234567' },
+    ]);
+  }, 10000);
+
+  it('keeps the link when an updated email belongs to another customer', async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ data: [{ id: 5, channels: [] }] }))
+      .mockResolvedValueOnce(jsonResponse({ error: 'conflict' }, { status: 409 }))
+      .mockResolvedValueOnce(jsonResponse({ id: 5 }));
     const client = new GorgiasClient(auth);
     const result = await client.upsertCustomer({
-      email: 'a@b.c',
-      external_id: 'acc9',
+      email: 'changed@b.c',
+      name: 'Ann',
+      external_id: '64f1c2a9e3b7d10012a4f5c1',
     });
-    expect(result).toEqual({ id: 42 });
-    expect(fetchMock.mock.calls[2][0]).toContain('external_id=acc9');
-    expect(fetchMock.mock.calls[3][1].method).toBe('PUT');
-  });
+    expect(result).toEqual({ id: 5 });
+    expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({
+      name: 'Ann',
+      external_id: '64f1c2a9e3b7d10012a4f5c1',
+    });
+  }, 10000);
 
-  it('listChatIntegrations filters by gorgias_chat type', async () => {
-    fetchMock.mockResolvedValue(
-      jsonResponse({ data: [{ id: 3, name: 'Chat', application_id: 'abc' }] }),
-    );
-    const client = new GorgiasClient(auth);
-    const list = await client.listChatIntegrations();
-    expect(list).toEqual([{ id: 3, name: 'Chat', application_id: 'abc' }]);
-    expect(fetchMock.mock.calls[0][0]).toContain('type=gorgias_chat');
-  });
-
-  it('putCustomerData retries once with a fresh version on 409', async () => {
+  it('listIntegrations follows next_cursor', async () => {
     fetchMock
-      .mockResolvedValueOnce(jsonResponse({}, { status: 409 }))
-      .mockResolvedValueOnce(jsonResponse({ ok: true }));
+      .mockResolvedValueOnce(
+        jsonResponse({ data: [{ id: 1 }], meta: { next_cursor: 'c2' } }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ data: [{ id: 2 }], meta: {} }));
     const client = new GorgiasClient(auth);
-    await expect(client.putCustomerData(5, {})).resolves.toEqual({ ok: true });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const list = await client.listIntegrations();
+    expect(list.map((i) => i.id)).toEqual([1, 2]);
+    expect(fetchMock.mock.calls[1][0]).toContain('cursor=c2');
+  });
+
+  it('listWidgets accepts a bare array response', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse([{ id: 8 }]));
+    const client = new GorgiasClient(auth);
+    expect(await client.listWidgets(7)).toEqual([{ id: 8 }]);
+    expect(fetchMock.mock.calls[0][0]).toContain('integration_id=7');
+  });
+
+  it('getIntegration returns null on 404', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({}, { status: 404 }));
+    const client = new GorgiasClient(auth);
+    expect(await client.getIntegration(7)).toBeNull();
   });
 });
 
-describe('clientFromSettings', () => {
-  it('builds a client from connection settings', () => {
-    const client = clientFromSettings({
-      connection: { subdomain: ' acme ', email: 'a@b.c', api_key: 'k' },
-    });
-    expect(client.baseUrl).toBe('https://acme.gorgias.com');
+describe('customer bodies', () => {
+  it('create includes the email channel, plus phone when known', () => {
+    expect(customerCreateBody({ email: 'a@b.c' }).channels).toEqual([
+      { type: 'email', address: 'a@b.c', preferred: true },
+    ]);
   });
-  it('throws when settings are incomplete', () => {
-    expect(() => clientFromSettings({ connection: { subdomain: 'x' } })).toThrow(
-      /incomplete/,
-    );
-    expect(() => clientFromSettings({})).toThrow(/incomplete/);
+  it('update leaves channels alone unless a new phone must be added', () => {
+    const existing = {
+      channels: [{ type: 'email', address: 'a@b.c', preferred: true }],
+    };
+    expect(customerUpdateBody(existing, { email: 'a@b.c' }).channels).toBeUndefined();
+    expect(
+      customerUpdateBody(existing, { email: 'a@b.c', phone: '+1555' }).channels,
+    ).toEqual([
+      { type: 'email', address: 'a@b.c', preferred: true },
+      { type: 'phone', address: '+1555' },
+    ]);
+    const withPhone = {
+      channels: [...existing.channels, { type: 'phone', address: '+1555' }],
+    };
+    expect(
+      customerUpdateBody(withPhone, { email: 'a@b.c', phone: '+1555' }).channels,
+    ).toBeUndefined();
+  });
+});
+
+describe('clientFromState', () => {
+  const state = {
+    gorgias_subdomain: 'acme',
+    access_token: 'token123',
+    refresh_token: 'refresh123',
+  };
+  it('builds a client from the OAuth state', () => {
+    expect(isConnected(state)).toBe(true);
+    expect(clientFromState(state).baseUrl).toBe('https://acme.gorgias.com');
+  });
+  it('refuses state without tokens', () => {
+    const revoked = { ...state, access_token: null, refresh_token: null };
+    expect(isConnected(revoked)).toBe(false);
+    expect(() => clientFromState(revoked)).toThrow(/not connected/);
+    expect(isConnected({})).toBe(false);
   });
 });

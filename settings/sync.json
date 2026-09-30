@@ -1,29 +1,20 @@
 {
   "$schema": "https://json.swell.store/setting.json",
   "label": "Sync",
-  "description": "Control how customer and order data syncs to Gorgias",
+  "description": "Control what the app sends to Gorgias and hears back from it",
   "fields": [
     {
       "id": "enabled",
-      "label": "Sync customers and orders to Gorgias",
+      "label": "Sync customers to Gorgias",
       "type": "toggle",
+      "description": "Create and update Gorgias customers from Swell accounts (name, email and phone)",
       "default": false
     },
     {
-      "id": "sync_ticket_updates",
-      "label": "Sync ticket status updates from Gorgias",
-      "type": "toggle",
-      "description": "Also receive ticket-updated events (higher traffic)",
-      "default": false,
-      "conditions": {
-        "sync.enabled": true
-      }
-    },
-    {
       "id": "backfill_limit",
-      "label": "Backfill limit",
+      "label": "Import limit",
       "type": "select",
-      "description": "Maximum number of existing customers to sync when connecting",
+      "description": "Maximum number of existing customers to import, newest buyers first",
       "options": [
         { "value": "100", "label": "100" },
         { "value": "500", "label": "500" },
@@ -33,6 +24,13 @@
       "conditions": {
         "sync.enabled": true
       }
+    },
+    {
+      "id": "sync_ticket_updates",
+      "label": "Hear about ticket updates",
+      "type": "toggle",
+      "description": "Also notify Swell when a ticket changes, not only when it's created. Keeps open-ticket counts and the Gorgias sidebar current, at the cost of more traffic",
+      "default": true
     }
   ]
 }

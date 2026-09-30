@@ -1,0 +1,48 @@
+{
+  "description": "Gorgias ticket context stored on each customer under $app.gorgias. Written by the gorgias-events function.",
+  "fields": {
+    "open_ticket_count": {
+      "type": "int",
+      "description": "Number of this customer's recent tickets whose last known status is open"
+    },
+    "last_ticket_subject": {
+      "type": "string",
+      "description": "Subject of the most recently updated ticket"
+    },
+    "last_ticket_at": {
+      "type": "date",
+      "description": "When Swell last heard about one of this customer's tickets"
+    },
+    "last_ticket_url": {
+      "type": "string",
+      "description": "Link to the most recently updated ticket in Gorgias"
+    },
+    "tickets": {
+      "type": "array",
+      "value_type": "object",
+      "description": "Up to 20 recent tickets, newest first. Replaced as a whole on each write",
+      "fields": {
+        "id": {
+          "type": "string",
+          "description": "Gorgias ticket id"
+        },
+        "subject": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "description": "Last status Gorgias reported (open, closed)"
+        },
+        "channel": {
+          "type": "string"
+        },
+        "url": {
+          "type": "string"
+        },
+        "date_updated": {
+          "type": "date"
+        }
+      }
+    }
+  }
+}

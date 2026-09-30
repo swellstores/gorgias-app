@@ -1,13 +1,11 @@
 // Gorgias REST API client for Workers runtime.
-// Basic auth (private-app phase); OAuth support later only changes the
-// constructor and authHeader(). Rate limit: 40 req/20s per account (Basic),
-// shared across all API-key integrations — requests are spaced sequentially
-// and 429s honor Retry-After within the remaining invocation budget.
+// OAuth2 bearer tokens obtained by the app's frontend Worker (frontend/). Rate
+// limit: 80 req/20s for OAuth apps — requests are spaced sequentially and 429s
+// honor Retry-After within the remaining invocation budget.
 
 export interface GorgiasAuth {
   subdomain: string;
-  email: string;
-  apiKey: string;
+  accessToken: string;
 }
 
 export class GorgiasError extends Error {
@@ -20,8 +18,23 @@ export class GorgiasError extends Error {
   }
 }
 
+export interface CustomerFields {
+  email: string;
+  name?: string;
+  external_id?: string;
+  phone?: string;
+}
+
 const MIN_REQUEST_INTERVAL_MS = 600;
 const MAX_RETRIES_429 = 2;
+const MAX_LIST_PAGES = 10;
+
+// List endpoints answer { data, meta: { next_cursor } }; some are documented as
+// a bare array, so accept both.
+function listData(res: any): any[] {
+  if (Array.isArray(res)) return res;
+  return Array.isArray(res?.data) ? res.data : [];
+}
 
 export class GorgiasClient {
   private auth: GorgiasAuth;
@@ -36,7 +49,7 @@ export class GorgiasClient {
   }
 
   private authHeader(): string {
-    return `Basic ${btoa(`${this.auth.email}:${this.auth.apiKey}`)}`;
+    return `Bearer ${this.auth.accessToken}`;
   }
 
   private async throttle(): Promise<void> {
@@ -58,7 +71,8 @@ export class GorgiasClient {
       for (const [k, v] of Object.entries(options.query)) {
         if (v !== undefined && v !== null) params.set(k, String(v));
       }
-      url += (url.includes('?') ? '&' : '?') + params.toString();
+      const qs = params.toString();
+      if (qs) url += (url.includes('?') ? '&' : '?') + qs;
     }
 
     const res = await fetch(url, {
@@ -75,12 +89,20 @@ export class GorgiasClient {
     // 301 = merged customer; follow to the surviving record once.
     if (res.status === 301 && attempt < 1) {
       const location = res.headers.get('location');
-      if (location) return this.request(method, location, options, attempt + 1);
+      if (location) {
+        return this.request(
+          method,
+          new URL(location, this.baseUrl).toString(),
+          { data: options.data },
+          attempt + 1,
+        );
+      }
     }
 
+    // Waits are capped so a batch can't sleep past the 10s function timeout.
     if (res.status === 429 && attempt < MAX_RETRIES_429) {
       const retryAfter = parseInt(res.headers.get('retry-after') || '2', 10);
-      await new Promise((r) => setTimeout(r, Math.min(retryAfter, 10) * 1000));
+      await new Promise((r) => setTimeout(r, Math.min(retryAfter, 3) * 1000));
       return this.request(method, path, options, attempt + 1);
     }
 
@@ -112,95 +134,89 @@ export class GorgiasClient {
     return this.request('PUT', path, { data });
   }
 
+  private async listAll(path: string, query: Record<string, any> = {}) {
+    const results: any[] = [];
+    let cursor: string | undefined;
+    for (let page = 0; page < MAX_LIST_PAGES; page++) {
+      const res = await this.get(path, { ...query, limit: 100, cursor });
+      results.push(...listData(res));
+      cursor = res?.meta?.next_cursor || undefined;
+      if (!cursor) break;
+    }
+    return results;
+  }
+
   // --- API helpers ---
 
   checkAuth() {
     return this.get('/api/account');
   }
 
-  async findCustomerByEmail(email: string): Promise<any | null> {
-    const res = await this.get('/api/customers', { email, limit: 1 });
-    return res?.data?.[0] || null;
+  async findCustomer(query: Record<string, string>): Promise<any | null> {
+    const res = await this.get('/api/customers', { ...query, limit: 1 });
+    return listData(res)[0] || null;
   }
 
-  async upsertCustomer(fields: {
-    email: string;
-    firstname?: string;
-    lastname?: string;
-    external_id?: string;
-    phone?: string;
-  }): Promise<any> {
-    const existing = await this.findCustomerByEmail(fields.email);
-    const body: Record<string, unknown> = {
-      email: fields.email,
-      firstname: fields.firstname || undefined,
-      lastname: fields.lastname || undefined,
-      external_id: fields.external_id || undefined,
-    };
-    if (fields.phone) {
-      body.channels = [{ type: 'phone', address: fields.phone }];
+  // Looks up by external_id (the Swell account id, stable across email
+  // changes), then by email. Name is sent as `name`; firstname/lastname are
+  // derived by Gorgias.
+  async upsertCustomer(fields: CustomerFields): Promise<any> {
+    let existing = fields.external_id
+      ? await this.findCustomer({ external_id: fields.external_id })
+      : null;
+    if (!existing) {
+      existing = await this.findCustomer({ email: fields.email });
     }
     if (existing) {
-      return this.put(`/api/customers/${existing.id}`, body);
+      return this.updateCustomer(existing, fields);
     }
     try {
-      return await this.post('/api/customers', body);
+      return await this.post('/api/customers', customerCreateBody(fields));
     } catch (err) {
-      // Email search can miss a customer that already holds this external_id
-      // (e.g. index lag or changed email) — find and update it instead.
-      if (
-        err instanceof GorgiasError &&
-        err.status === 409 &&
-        fields.external_id
-      ) {
-        const res = await this.get('/api/customers', {
-          external_id: fields.external_id,
-          limit: 1,
+      // Search can lag behind a customer that already holds this address.
+      if (err instanceof GorgiasError && err.status === 409) {
+        const match = await this.findCustomer({
+          channel_type: 'email',
+          channel_address: fields.email,
         });
-        const match = res?.data?.[0];
-        if (match) return this.put(`/api/customers/${match.id}`, body);
+        if (match) return this.updateCustomer(match, fields);
       }
       throw err;
     }
   }
 
-  // Version is a monotonic stale-write guard — a current timestamp always
-  // supersedes prior writes. NOTE: this endpoint is OAuth-app-only; with Basic
-  // auth Gorgias returns 400 "only accessible via OAuth" — we return null so
-  // Basic-auth installs skip it (sidebar data comes from the http widget pull
-  // instead) and the code path lights up in the OAuth phase.
-  async putCustomerData(
-    customerId: number,
-    data: SwellData,
-  ): Promise<any | null> {
-    const doPut = () =>
-      this.put(`/api/customers/${customerId}/data`, {
-        data,
-        version: new Date().toISOString(),
-      });
+  private async updateCustomer(existing: any, fields: CustomerFields) {
+    // List results don't carry channels; the full record is needed to add a
+    // phone without dropping the channels the customer already has.
+    if (fields.phone && !Array.isArray(existing.channels)) {
+      existing = await this.get(`/api/customers/${existing.id}`);
+    }
+    const body = customerUpdateBody(existing, fields);
     try {
-      return await doPut();
+      return await this.put(`/api/customers/${existing.id}`, body);
     } catch (err) {
-      if (err instanceof GorgiasError) {
-        if (err.status === 409) return doPut();
-        if (err.status === 400 && /oauth/i.test(JSON.stringify(err.body))) {
-          return null;
-        }
+      // The new email or phone already belongs to another Gorgias customer
+      // (e.g. after an email change in Swell): keep the link, skip the contact.
+      if (err instanceof GorgiasError && err.status === 409) {
+        return this.put(`/api/customers/${existing.id}`, {
+          name: body.name,
+          external_id: body.external_id,
+        });
       }
       throw err;
     }
   }
 
-  async listIntegrations(): Promise<any[]> {
-    const res = await this.get('/api/integrations', { limit: 100 });
-    return res?.data || [];
+  async getIntegration(id: number): Promise<any | null> {
+    try {
+      return await this.get(`/api/integrations/${id}`);
+    } catch (err) {
+      if (err instanceof GorgiasError && err.status === 404) return null;
+      throw err;
+    }
   }
-  async listChatIntegrations(): Promise<any[]> {
-    const res = await this.get('/api/integrations', {
-      type: 'gorgias_chat',
-      limit: 100,
-    });
-    return res?.data || [];
+  listIntegrations(): Promise<any[]> {
+    return this.listAll('/api/integrations');
   }
   createIntegration(data: SwellData) {
     return this.post('/api/integrations', data);
@@ -209,9 +225,8 @@ export class GorgiasClient {
     return this.put(`/api/integrations/${id}`, data);
   }
 
-  async listWidgets(): Promise<any[]> {
-    const res = await this.get('/api/widgets', { limit: 100 });
-    return res?.data || [];
+  listWidgets(integrationId: number): Promise<any[]> {
+    return this.listAll('/api/widgets', { integration_id: integrationId });
   }
   createWidget(data: SwellData) {
     return this.post('/api/widgets', data);
@@ -219,31 +234,82 @@ export class GorgiasClient {
   updateWidget(id: number, data: SwellData) {
     return this.put(`/api/widgets/${id}`, data);
   }
-  deleteWidget(id: number) {
-    return this.request('DELETE', `/api/widgets/${id}`);
-  }
-
-  createInternalNote(ticketId: number, bodyText: string) {
-    return this.post(`/api/tickets/${ticketId}/messages`, {
-      channel: 'internal-note',
-      via: 'api',
-      source: { type: 'internal-note' },
-      body_text: bodyText,
-      internal: true,
-    });
-  }
 }
 
-export function clientFromSettings(settings: SwellSettings): GorgiasClient {
-  const conn = settings?.connection || {};
-  if (!conn.subdomain || !conn.email || !conn.api_key) {
-    throw new Error(
-      'Gorgias connection settings are incomplete (subdomain, email, api_key required)',
-    );
+function phoneChannel(phone: string) {
+  return { type: 'phone', address: phone };
+}
+
+export function customerCreateBody(fields: CustomerFields): SwellData {
+  const channels: SwellData[] = [
+    { type: 'email', address: fields.email, preferred: true },
+  ];
+  if (fields.phone) channels.push(phoneChannel(fields.phone));
+  return {
+    email: fields.email,
+    name: fields.name || undefined,
+    external_id: fields.external_id || undefined,
+    channels,
+  };
+}
+
+// Channels are only sent to add a missing phone, and then as the full merged
+// list so an update can't drop the customer's existing email/phone channels.
+export function customerUpdateBody(
+  existing: SwellData,
+  fields: CustomerFields,
+): SwellData {
+  const body: SwellData = {
+    email: fields.email,
+    name: fields.name || undefined,
+    external_id: fields.external_id || undefined,
+  };
+  const current: SwellData[] = Array.isArray(existing?.channels)
+    ? existing.channels
+    : [];
+  const hasPhone = current.some(
+    (c) => c?.type === 'phone' && c?.address === fields.phone,
+  );
+  if (fields.phone && !hasPhone && Array.isArray(existing?.channels)) {
+    body.channels = [
+      ...current.map((c) => ({
+        type: c.type,
+        address: c.address,
+        preferred: !!c.preferred,
+      })),
+      phoneChannel(fields.phone),
+    ];
+  }
+  return body;
+}
+
+interface TokenState {
+  gorgias_subdomain?: string | null;
+  access_token?: string | null;
+  refresh_token?: string | null;
+}
+
+// Connected = the merchant authorized the app in Gorgias (frontend/ Worker)
+// and access hasn't been revoked since.
+export function isConnected(state: TokenState): boolean {
+  return !!(state.gorgias_subdomain && state.access_token && state.refresh_token);
+}
+
+// Rejected credentials are a configuration problem, not a transient failure:
+// event handlers skip instead of throwing, so the platform doesn't retry and
+// eventually auto-disable them. reconcile() reports it in the status.
+export function isAuthError(err: unknown): boolean {
+  return (
+    err instanceof GorgiasError && (err.status === 401 || err.status === 403)
+  );
+}
+
+export function clientFromState(state: TokenState): GorgiasClient {
+  if (!isConnected(state)) {
+    throw new Error('Gorgias is not connected');
   }
   return new GorgiasClient({
-    subdomain: String(conn.subdomain).trim(),
-    email: String(conn.email).trim(),
-    apiKey: String(conn.api_key).trim(),
+    subdomain: String(state.gorgias_subdomain),
+    accessToken: String(state.access_token),
   });
 }
