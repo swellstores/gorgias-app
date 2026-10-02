@@ -4,6 +4,7 @@
 	"name": "Gorgias",
 	"type": "integration",
 	"version": "1.0.1",
+	"price_external": true,
 	"permissions": [
 		"read_settings",
 		"read_accounts",
