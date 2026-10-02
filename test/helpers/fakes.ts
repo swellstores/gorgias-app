@@ -1,5 +1,7 @@
 import { vi } from 'vitest';
 import { createMockRequest } from './mock-request';
+import { AppSecrets, appSecrets } from '../../functions/lib/auth';
+import { connectionFromSettings } from '../../functions/lib/gorgias';
 
 export const STORE = {
   id: 'teststore',
@@ -8,28 +10,12 @@ export const STORE = {
   url: 'https://shop.example.com',
 };
 export const PUBLIC_KEY = 'app_pk_test_123';
-export const EVENTS_SECRET = 'events-secret';
-export const INTERNAL_SECRET = 'internal-secret';
-export const WORKER_URL = 'https://swell-gorgias.example.workers.dev';
-export const ACCESS_TOKEN = 'gorgias-access-token';
-export const RENEWED_TOKEN = 'gorgias-renewed-token';
+export const CONNECTION = { subdomain: 'acme', email: 'agent@acme.com', api_key: 'key123' };
+export const BASIC_AUTH = `Basic ${btoa('agent@acme.com:key123')}`;
 
-const hoursFromNow = (h: number) => new Date(Date.now() + h * 3600000).toISOString();
-
-// State as the frontend Worker leaves it after the merchant authorizes the app.
-export function connectedState(overrides: SwellData = {}): SwellData {
-  return {
-    gorgias_subdomain: 'acme',
-    access_token: ACCESS_TOKEN,
-    refresh_token: 'gorgias-refresh-token',
-    token_expires_at: hoursFromNow(20),
-    refresh_key: 'refresh-key',
-    oauth_store_id: 'teststore',
-    oauth_env: 'test',
-    oauth_service_url: WORKER_URL,
-    date_authorized: '2026-09-28T12:00:00.000Z',
-    ...overrides,
-  };
+// The secrets the app derives for a set of connection settings.
+export function secretsFor(connection: SwellData = CONNECTION): Promise<AppSecrets> {
+  return appSecrets(connectionFromSettings({ connection })!, STORE.id);
 }
 
 export interface FakeSwellOptions {
@@ -148,13 +134,6 @@ export function mockFetch(override?: Override) {
 
     const { pathname } = new URL(call.url);
     if (call.url.includes('.swell.store/functions/')) return json({});
-    if (call.url === `${WORKER_URL}/oauth/refresh`) {
-      return json({
-        access_token: RENEWED_TOKEN,
-        refresh_token: null,
-        expires_at: hoursFromNow(24),
-      });
-    }
     if (pathname === '/api/account') return json({ domain: 'acme' });
     if (pathname.startsWith('/api/integrations/')) {
       return call.method === 'GET'

@@ -2,7 +2,8 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import handler, { config } from '../../functions/sync-customer';
 import { changesContactDetails } from '../../functions/lib/sync-account';
 import {
-  connectedState,
+  BASIC_AUTH,
+  CONNECTION,
   createAppRequest,
   createFakeSwell,
   json,
@@ -10,9 +11,9 @@ import {
 } from '../helpers/fakes';
 
 const settings = {
+  connection: CONNECTION,
   sync: { enabled: true },
 };
-const state = connectedState();
 
 describe('sync-customer config', () => {
   it('uses the nested $settings condition form the platform evaluates', () => {
@@ -45,7 +46,7 @@ describe('sync-customer handler', () => {
 
   it('ignores ticket-only account updates without calling Gorgias', async () => {
     const { calls } = mockFetch();
-    const { swell } = createFakeSwell({ settings, state });
+    const { swell } = createFakeSwell({ settings });
     const req = createAppRequest({
       swell,
       data: { id: 'a1', $event: { type: 'account.updated', data: { $app: {} } } },
@@ -59,7 +60,6 @@ describe('sync-customer handler', () => {
     const { calls } = mockFetch();
     const { swell } = createFakeSwell({
       settings,
-      state,
       accounts: [{ id: 'a1', email: 'a1@x.co', first_name: 'Ann' }],
     });
     const req = createAppRequest({
@@ -70,12 +70,12 @@ describe('sync-customer handler', () => {
     expect(result).toMatchObject({ account_id: 'a1', synced: true });
     const created = calls.find((c) => c.method === 'POST' && c.url.endsWith('/api/customers'))!;
     expect(created.body).toMatchObject({ email: 'a1@x.co', name: 'Ann', external_id: 'a1' });
-    expect(created.headers.Authorization).toBe('Bearer gorgias-access-token');
+    expect(created.headers.Authorization).toBe(BASIC_AUTH);
   }, 20000);
 
-  it('skips without throwing when Gorgias is not connected', async () => {
+  it('skips without throwing when the connection is incomplete', async () => {
     const { calls } = mockFetch();
-    const { swell } = createFakeSwell({ settings });
+    const { swell } = createFakeSwell({ settings: { sync: { enabled: true }, connection: {} } });
     const req = createAppRequest({
       swell,
       data: { id: 'a1', $event: { type: 'account.created', data: {} } },
@@ -85,13 +85,12 @@ describe('sync-customer handler', () => {
     expect(calls).toHaveLength(0);
   });
 
-  it('skips without throwing when Gorgias refuses the token', async () => {
+  it('skips without throwing when Gorgias rejects the credentials', async () => {
     mockFetch((call) =>
       call.url.includes('gorgias.com') ? json({ error: 'nope' }, 401) : undefined,
     );
     const { swell } = createFakeSwell({
       settings,
-      state,
       accounts: [{ id: 'a1', email: 'a1@x.co' }],
     });
     const req = createAppRequest({
@@ -104,7 +103,7 @@ describe('sync-customer handler', () => {
 
   it('does nothing when sync is off', async () => {
     const { calls } = mockFetch();
-    const { swell } = createFakeSwell({ settings: { sync: { enabled: false } }, state });
+    const { swell } = createFakeSwell({ settings: { ...settings, sync: { enabled: false } } });
     const req = createAppRequest({
       swell,
       data: { id: 'a1', $event: { type: 'account.created', data: {} } },

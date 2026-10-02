@@ -34,8 +34,8 @@
 		},
 		{
 			"id": "setup",
-			"title": "One-click connect",
-			"description": "Enter your Gorgias subdomain, click Connect and approve access in Gorgias. The app sets up the integration and sidebar widget for you.",
+			"title": "Connected in minutes",
+			"description": "Enter your Gorgias subdomain, agent email and API key, and save. The app creates the integration and sidebar widget for you.",
 			"image_src": "assets/screenshots/4-setup.png"
 		}
 	]

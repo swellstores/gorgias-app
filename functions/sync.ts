@@ -1,6 +1,6 @@
-import { verifySecretHeader } from './lib/auth';
+import { appSecrets, verifySecretHeader } from './lib/auth';
 import { callSync } from './lib/connect';
-import { clientFromState, isConnected } from './lib/gorgias';
+import { GorgiasClient, connectionFromSettings } from './lib/gorgias';
 import { loadState, saveState } from './lib/state';
 import { syncAccountToGorgias } from './lib/sync-account';
 
@@ -16,25 +16,23 @@ export const config: SwellConfig = {
 };
 
 // Small batches with a self-invocation chain: each invocation stays within the
-// 10s function budget and the Gorgias rate bucket (80 req/20s). Progress is
+// 10s function budget and the Gorgias rate bucket (40 req/20s). Progress is
 // saved after every batch, and reconcile() restarts a stalled chain from it.
 const BATCH_SIZE = 2;
 
 export default async function (req: SwellRequest) {
-  let state = await loadState(req.swell);
-  if (!verifySecretHeader(req.headers, state.internal_secret)) {
+  const settings = await req.swell.settings();
+  const connection = connectionFromSettings(settings);
+  const secrets = connection ? await appSecrets(connection, req.store.id) : null;
+  if (!connection || !secrets || !verifySecretHeader(req.headers, secrets.internal)) {
     return new SwellResponse({ error: 'unauthorized' }, { status: 401 });
   }
-
-  const settings = await req.swell.settings();
   if (!settings?.sync?.enabled) {
     return { skipped: 'sync_disabled' };
   }
-  if (!isConnected(state)) {
-    return { skipped: 'not_connected' };
-  }
 
-  const gorgias = clientFromState(state);
+  let state = await loadState(req.swell);
+  const gorgias = new GorgiasClient(connection);
   const params: SwellData = req.data || {};
 
   // Refresh mode: sync one account
@@ -86,7 +84,7 @@ export default async function (req: SwellRequest) {
     date_backfill_updated: new Date().toISOString(),
   });
   if (!done) {
-    callSync(req, state, { page: page + 1 });
+    callSync(req, secrets, { page: page + 1 });
   }
 
   return { mode: 'import', page, processed: accounts.length, done, results };

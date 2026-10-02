@@ -1,26 +1,11 @@
-// Single-record app collection (models/connections.json) holding the Gorgias
-// OAuth tokens (written by the frontend/ Worker), generated secrets,
-// provisioned Gorgias ids and import progress. Kept out of settings so a stale
-// dashboard Save can't overwrite it, and so merchants never handle secrets.
-
-import { randomHex } from './auth';
+// Single-record app collection (models/connections.json) holding provisioned
+// Gorgias ids, connection health and import progress. Kept out of settings so
+// a stale dashboard Save can't overwrite it. It holds no secrets: anything
+// written here also lands in the store's request logs (see appSecrets).
 
 // Fields set to null are cleared on save.
 export interface ConnectionState {
   id?: string;
-  // OAuth, written by the Worker when the merchant connects
-  gorgias_subdomain?: string | null;
-  access_token?: string | null;
-  refresh_token?: string | null;
-  token_expires_at?: string | null;
-  refresh_key?: string | null;
-  oauth_store_id?: string;
-  oauth_env?: string;
-  oauth_service_url?: string;
-  date_authorized?: string | null;
-  // Provisioning
-  events_secret?: string | null;
-  internal_secret?: string;
   fingerprint?: string | null;
   integration_id?: number | null;
   widget_id?: number | null;
@@ -62,15 +47,4 @@ export async function saveState(
     ? await swell.put(`${COLLECTION}/${state.id}`, values)
     : await swell.post(COLLECTION, values);
   return { ...state, ...values, ...(saved || {}) };
-}
-
-export async function ensureSecrets(
-  swell: SwellClient,
-  state: ConnectionState,
-): Promise<ConnectionState> {
-  if (state.id && state.events_secret && state.internal_secret) return state;
-  return saveState(swell, state, {
-    events_secret: state.events_secret || randomHex(24),
-    internal_secret: state.internal_secret || randomHex(24),
-  });
 }

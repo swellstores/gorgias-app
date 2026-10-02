@@ -1,30 +1,21 @@
-// Keeps the Gorgias side in line with the app's state. The merchant connects
-// with OAuth on the app's Connect page (frontend/ Worker), which stores the
-// tokens and calls the connect function; reconcile() (also run every few
-// minutes by functions/reconcile.ts) renews the access token, provisions
-// Gorgias when anything relevant changes, re-checks the connection hourly,
-// keeps the customer import moving, and reports the outcome in the read-only
-// connection.status setting.
+// Dashboard-driven connection: the merchant saves their Gorgias API key in the
+// app settings, and reconcile() (run every minute by functions/reconcile.ts)
+// provisions Gorgias when the settings change, re-checks the connection
+// hourly, keeps the customer import moving, and reports the outcome in the
+// read-only connection.status setting.
 
-import { SECRET_HEADER, sha256Hex } from './auth';
-import { GorgiasError, clientFromState, isConnected } from './gorgias';
+import { AppSecrets, SECRET_HEADER, appSecrets, sha256Hex } from './auth';
+import { GorgiasClient, GorgiasError, connectionFromSettings } from './gorgias';
 import { TEMPLATE_VERSION, provision } from './provision';
-import {
-  ConnectionState,
-  ensureSecrets,
-  loadState,
-  saveState,
-} from './state';
+import { ConnectionState, loadState, saveState } from './state';
 import { functionUrl } from './urls';
 
 const HEALTH_CHECK_MS = 60 * 60 * 1000;
 const RETRY_AFTER_ERROR_MS = 15 * 60 * 1000;
 const IMPORT_STALL_MS = 10 * 60 * 1000;
-// Access tokens last 24 hours; renew well before they run out.
-const REFRESH_BEFORE_MS = 3 * 60 * 60 * 1000;
 
 const NOT_CONNECTED =
-  'Not connected. Open Gorgias in your dashboard menu and click Connect Gorgias.';
+  'Not connected. Enter your Gorgias subdomain, agent email and API key, then save.';
 
 export interface ReconcileResult {
   status: 'incomplete' | 'connected' | 'error';
@@ -51,7 +42,10 @@ export async function ownerTag(publicKey: string): Promise<string> {
 export function describeError(err: unknown): string {
   if (err instanceof GorgiasError) {
     if (err.status === 401 || err.status === 403) {
-      return `Gorgias refused the app's access (${err.status}). Connect again from the Gorgias page in your dashboard`;
+      return `Gorgias rejected the agent email or API key (${err.status})`;
+    }
+    if (err.status === 404) {
+      return 'Gorgias returned 404 — check the subdomain';
     }
     return `Gorgias returned an error (${err.status})`;
   }
@@ -78,58 +72,18 @@ async function writeStatus(
   }
 }
 
-class RevokedError extends Error {}
-
-// Refreshing needs the Gorgias client secret, which only the app's Worker
-// holds; the per-store key the Worker issued at connect authorizes the call.
-async function refreshTokenIfNeeded(
-  req: SwellRequest,
-  state: ConnectionState,
-  now: Date,
-): Promise<ConnectionState> {
-  const expiresAt = Date.parse(state.token_expires_at || '') || 0;
-  if (expiresAt - now.getTime() > REFRESH_BEFORE_MS) return state;
-
-  const res = await fetch(`${state.oauth_service_url}/oauth/refresh`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      store_id: state.oauth_store_id,
-      env: state.oauth_env || '',
-      subdomain: state.gorgias_subdomain,
-      refresh_token: state.refresh_token,
-      key: state.refresh_key,
-    }),
-  });
-  const body: SwellData = await res.json().catch(() => ({}));
-  if (res.status === 400 && body?.error === 'invalid_grant') {
-    throw new RevokedError('Gorgias access was revoked');
-  }
-  if (!res.ok || !body?.access_token) {
-    throw new Error(`Could not renew Gorgias access (${res.status})`);
-  }
-  return saveState(req.swell, state, {
-    access_token: body.access_token,
-    token_expires_at: body.expires_at,
-    // A rotated refresh token comes with a new key bound to it.
-    ...(body.refresh_token && body.key
-      ? { refresh_token: body.refresh_token, refresh_key: body.key }
-      : {}),
-  });
-}
-
 // Calls the sync route through the gateway. Fire-and-forget: the import chain
 // is restarted by reconcile() if a link is lost.
 export function callSync(
   req: SwellRequest,
-  state: ConnectionState,
+  secrets: AppSecrets,
   body: { page?: number; account_id?: string },
 ): void {
   const call = fetch(functionUrl(req.store, req.appId, 'sync'), {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
-      [SECRET_HEADER]: state.internal_secret || '',
+      [SECRET_HEADER]: secrets.internal,
       Authorization: req.publicKey || '',
     },
     body: JSON.stringify(body),
@@ -145,6 +99,7 @@ async function continueImport(
   req: SwellRequest,
   settings: SwellSettings,
   state: ConnectionState,
+  secrets: AppSecrets,
   subdomain: string,
   now: Date,
 ): Promise<{ state: ConnectionState; phase: string }> {
@@ -158,7 +113,7 @@ async function continueImport(
       backfill_synced: 0,
       date_backfill_updated: now.toISOString(),
     });
-    callSync(req, state, { page: 1 });
+    callSync(req, secrets, { page: 1 });
     return { state, phase: 'started' };
   }
   if (state.backfill_done) return { state, phase: 'done' };
@@ -167,7 +122,7 @@ async function continueImport(
     state = await saveState(req.swell, state, {
       date_backfill_updated: now.toISOString(),
     });
-    callSync(req, state, { page: state.backfill_page || 1 });
+    callSync(req, secrets, { page: state.backfill_page || 1 });
     return { state, phase: 'resumed' };
   }
   return { state, phase: 'running' };
@@ -200,15 +155,10 @@ export async function reconcile(
   ]);
   let state = loaded;
 
-  if (!isConnected(state)) {
-    // Disconnected: revoke the secret Gorgias holds, so the helpdesk stops
-    // receiving customer data. Reconnecting generates a new one.
-    if (state.events_secret || state.fingerprint) {
-      state = await saveState(req.swell, state, {
-        events_secret: null,
-        fingerprint: null,
-      });
-    }
+  // Nothing to revoke when the settings are cleared: the secret Gorgias holds
+  // is derived from them, so it stops being accepted at once.
+  const connection = connectionFromSettings(settings);
+  if (!connection) {
     await writeStatus(req, settings, NOT_CONNECTED);
     return { status: 'incomplete' };
   }
@@ -219,31 +169,29 @@ export async function reconcile(
     return { status: 'error', error };
   }
 
-  const subdomain = String(state.gorgias_subdomain);
+  const { subdomain } = connection;
   const gorgiasAccount = `${subdomain}.gorgias.com`;
 
-  // Connected a different helpdesk: the old one must lose access, and ids
-  // saved from it mean nothing in the new one.
+  // Switched to a different helpdesk: ids saved from the old one mean nothing
+  // in the new one. (Its secret already differs, since it's derived per helpdesk.)
   if (state.gorgias_account && state.gorgias_account !== gorgiasAccount) {
     state = await saveState(req.swell, state, {
-      events_secret: null,
       fingerprint: null,
       integration_id: null,
       widget_id: null,
       gorgias_account: gorgiasAccount,
     });
   }
-  state = await ensureSecrets(req.swell, state);
 
+  const secrets = await appSecrets(connection, req.store.id);
   const eventsUrl = functionUrl(req.store, req.appId, 'gorgias-events');
   const syncTicketUpdates = settings?.sync?.sync_ticket_updates !== false;
-  // A new authorization (date_authorized) always re-provisions.
   const fingerprint = await sha256Hex(
     [
       TEMPLATE_VERSION,
       subdomain,
-      state.date_authorized || '',
-      state.events_secret,
+      connection.email,
+      await sha256Hex(connection.apiKey),
       req.publicKey,
       eventsUrl,
       String(syncTicketUpdates),
@@ -266,14 +214,13 @@ export async function reconcile(
   }
 
   const provisioned = force || !upToDate;
-  try {
-    state = await refreshTokenIfNeeded(req, state, now);
-    if (provisioned) {
-      const gorgias = clientFromState(state);
+  if (provisioned) {
+    try {
+      const gorgias = new GorgiasClient(connection);
       await gorgias.checkAuth();
       const result = await provision(gorgias, {
         eventsUrl,
-        eventsSecret: state.events_secret!,
+        eventsSecret: secrets.events,
         publicKey: req.publicKey,
         ownerTag: await ownerTag(req.publicKey),
         syncTicketUpdates,
@@ -298,38 +245,20 @@ export async function reconcile(
             ? state.date_connected
             : now.toISOString(),
       });
-    }
-  } catch (err) {
-    if (err instanceof RevokedError) {
-      // Uninstalled or revoked in Gorgias: forget the tokens and the secret
-      // Gorgias holds; the merchant reconnects from the Connect page.
+    } catch (err) {
+      const error = describeError(err);
+      console.error(`Gorgias connection failed: ${String(err)}`);
       await saveState(req.swell, state, {
-        access_token: null,
-        refresh_token: null,
-        token_expires_at: null,
-        refresh_key: null,
-        events_secret: null,
-        fingerprint: null,
+        last_error: error,
+        last_attempt_fingerprint: fingerprint,
+        date_last_attempt: now.toISOString(),
       });
-      await writeStatus(
-        req,
-        settings,
-        `Not connected: ${err.message}. Open Gorgias in your dashboard menu and click Connect Gorgias.`,
-      );
-      return { status: 'error', error: err.message };
+      await writeStatus(req, settings, `Could not connect: ${error}`);
+      return { status: 'error', error };
     }
-    const error = describeError(err);
-    console.error(`Gorgias connection failed: ${String(err)}`);
-    await saveState(req.swell, state, {
-      last_error: error,
-      last_attempt_fingerprint: fingerprint,
-      date_last_attempt: now.toISOString(),
-    });
-    await writeStatus(req, settings, `Could not connect: ${error}`);
-    return { status: 'error', error };
   }
 
-  const imported = await continueImport(req, settings, state, subdomain, now);
+  const imported = await continueImport(req, settings, state, secrets, subdomain, now);
   await writeStatus(req, settings, connectedStatus(imported.state, imported.phase));
   return { status: 'connected', provisioned, import: imported.phase };
 }

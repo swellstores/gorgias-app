@@ -10,6 +10,6 @@ When a ticket comes in or changes, Gorgias checks with your store. The app match
 
 **Current by default.** The app hears about new tickets and about changes to existing ones, so open-ticket counts and the sidebar stay current. You can limit it to new tickets to cut traffic, but then closed tickets keep counting as open.
 
-**Nothing to copy.** You approve access in Gorgias itself, so there are no API keys to find or paste, and you can disconnect from either side at any time.
+**Secured without extra setup.** The app derives the secret for the calls between Gorgias and your store from your API key, so there's nothing else to create or copy, and changing or removing the key revokes it.
 
-Setup takes a minute. Open Gorgias in your Swell dashboard's menu, enter your Gorgias subdomain, click Connect Gorgias and approve access. You're brought back to Swell, and the next ticket from a Swell customer opens with their orders in the sidebar.
+Setup takes a few minutes. Copy your REST API key from Gorgias (Settings → You → REST API), enter it in the app settings with your Gorgias subdomain and the email of the agent it belongs to, and save. Within about a minute the settings page shows that you're connected, and the next ticket from a Swell customer opens with their orders in the sidebar.

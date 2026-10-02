@@ -1,37 +1,46 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { ownerTag, reconcile } from '../../functions/lib/connect';
 import {
-  ACCESS_TOKEN,
+  BASIC_AUTH,
+  CONNECTION,
   PUBLIC_KEY,
-  RENEWED_TOKEN,
-  WORKER_URL,
-  connectedState,
   createAppRequest,
   createFakeSwell,
   json,
   mockFetch,
+  secretsFor,
 } from '../helpers/fakes';
 
 const minutesAgo = (m: number) => new Date(Date.now() - m * 60000).toISOString();
-const hoursFromNow = (h: number) => new Date(Date.now() + h * 3600000).toISOString();
 
 function gorgiasCalls<T extends { url: string }>(calls: T[]): T[] {
   return calls.filter((c) => c.url.includes('gorgias.com'));
 }
 
-function connected(overrides: SwellData = {}, settings: SwellData = {}) {
-  return createFakeSwell({ settings, state: connectedState(overrides) });
+function connected(settings: SwellData = {}) {
+  return createFakeSwell({ settings: { connection: { ...CONNECTION }, ...settings } });
 }
 
 describe('reconcile', () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it('points to the Connect page until the merchant authorizes the app', async () => {
+  it('asks for credentials when settings are incomplete', async () => {
     const { calls } = mockFetch();
-    const { swell, db } = createFakeSwell();
+    const { swell, db } = createFakeSwell({ settings: { connection: {} } });
     const result = await reconcile(createAppRequest({ swell }));
     expect(result.status).toBe('incomplete');
-    expect(db.settings.connection.status).toMatch(/^Not connected\. Open Gorgias in your dashboard menu/);
+    expect(db.settings.connection.status).toBe(
+      'Not connected. Enter your Gorgias subdomain, agent email and API key, then save.',
+    );
+    expect(calls).toHaveLength(0);
+  });
+
+  it('treats a subdomain that is not a single helpdesk name as missing', async () => {
+    const { calls } = mockFetch();
+    const { swell } = createFakeSwell({
+      settings: { connection: { ...CONNECTION, subdomain: 'evil.com/x' } },
+    });
+    expect((await reconcile(createAppRequest({ swell }))).status).toBe('incomplete');
     expect(calls).toHaveLength(0);
   });
 
@@ -44,15 +53,12 @@ describe('reconcile', () => {
     expect(calls).toHaveLength(0);
   });
 
-  it('provisions with the OAuth token: secrets, integration, widget, status', async () => {
+  it('connects on first run: provisions with a derived secret and reports status', async () => {
     const { calls } = mockFetch();
     const { swell, db } = connected();
     const result = await reconcile(createAppRequest({ swell }));
 
     expect(result).toMatchObject({ status: 'connected', provisioned: true, import: 'off' });
-    expect(db.state!.events_secret).toMatch(/^[0-9a-f]{48}$/);
-    expect(db.state!.internal_secret).toMatch(/^[0-9a-f]{48}$/);
-    expect(db.state!.events_secret).not.toBe(db.state!.internal_secret);
     expect(db.state).toMatchObject({
       integration_id: 11,
       widget_id: 22,
@@ -61,9 +67,7 @@ describe('reconcile', () => {
     });
     expect(db.settings.connection.status).toMatch(/^Connected to acme\.gorgias\.com\./);
 
-    gorgiasCalls(calls).forEach((c) =>
-      expect(c.headers.Authorization).toBe(`Bearer ${ACCESS_TOKEN}`),
-    );
+    gorgiasCalls(calls).forEach((c) => expect(c.headers.Authorization).toBe(BASIC_AUTH));
     const created = calls.find(
       (c) => c.method === 'POST' && c.url === 'https://acme.gorgias.com/api/integrations',
     )!;
@@ -71,95 +75,30 @@ describe('reconcile', () => {
       'https://teststore.swell.store/functions/gorgias/gorgias-events',
     );
     expect(created.body.http.headers).toEqual({
-      'X-Swell-Gorgias-Secret': db.state!.events_secret,
+      'X-Swell-Gorgias-Secret': (await secretsFor()).events,
       Authorization: PUBLIC_KEY,
     });
     expect(created.body.http.triggers['ticket-updated']).toBe(true);
     expect(created.body.description).toContain(await ownerTag(PUBLIC_KEY));
     expect(created.body.description).not.toContain(PUBLIC_KEY);
-    // the token has hours left: no refresh
-    expect(calls.some((c) => c.url.startsWith(WORKER_URL))).toBe(false);
   }, 20000);
 
-  it('renews an access token that is about to expire through the Worker', async () => {
-    const { calls } = mockFetch();
-    const { swell, db } = connected({ token_expires_at: hoursFromNow(1) });
-    const result = await reconcile(createAppRequest({ swell }));
-    expect(result.status).toBe('connected');
-
-    const refresh = calls.find((c) => c.url === `${WORKER_URL}/oauth/refresh`)!;
-    expect(refresh.method).toBe('POST');
-    expect(refresh.body).toEqual({
-      store_id: 'teststore',
-      env: 'test',
-      subdomain: 'acme',
-      refresh_token: 'gorgias-refresh-token',
-      key: 'refresh-key',
-    });
-    expect(db.state!.access_token).toBe(RENEWED_TOKEN);
-    expect(db.state!.refresh_token).toBe('gorgias-refresh-token');
-    gorgiasCalls(calls).forEach((c) =>
-      expect(c.headers.Authorization).toBe(`Bearer ${RENEWED_TOKEN}`),
-    );
-  }, 20000);
-
-  it('stores a rotated refresh token together with its new key', async () => {
-    mockFetch((call) =>
-      call.url === `${WORKER_URL}/oauth/refresh`
-        ? json({
-            access_token: RENEWED_TOKEN,
-            refresh_token: 'rotated-refresh',
-            key: 'rotated-key',
-            expires_at: hoursFromNow(24),
-          })
-        : undefined,
-    );
-    const { swell, db } = connected({ token_expires_at: hoursFromNow(1) });
+  it('never stores a secret in its state record', async () => {
+    mockFetch();
+    const { swell } = connected({ sync: { enabled: true } });
     await reconcile(createAppRequest({ swell }));
-    expect(db.state).toMatchObject({
-      access_token: RENEWED_TOKEN,
-      refresh_token: 'rotated-refresh',
-      refresh_key: 'rotated-key',
-    });
+    const secrets = await secretsFor();
+    const writes = JSON.stringify(
+      [...swell.put.mock.calls, ...swell.post.mock.calls].filter(([url]) =>
+        String(url).startsWith('/connections'),
+      ),
+    );
+    expect(writes).not.toContain(secrets.events);
+    expect(writes).not.toContain(secrets.internal);
+    expect(writes).not.toContain(CONNECTION.api_key);
   }, 20000);
 
-  it('forgets revoked access and asks the merchant to reconnect', async () => {
-    mockFetch((call) =>
-      call.url === `${WORKER_URL}/oauth/refresh`
-        ? json({ error: 'invalid_grant' }, 400)
-        : undefined,
-    );
-    const { swell, db } = connected({ token_expires_at: minutesAgo(5) });
-    const result = await reconcile(createAppRequest({ swell }));
-    expect(result).toMatchObject({ status: 'error', error: 'Gorgias access was revoked' });
-    expect(db.state).toMatchObject({
-      access_token: null,
-      refresh_token: null,
-      events_secret: null,
-    });
-    expect(db.settings.connection.status).toMatch(
-      /^Not connected: Gorgias access was revoked\. Open Gorgias in your dashboard menu/,
-    );
-  }, 20000);
-
-  it('reports a failed renewal and backs off', async () => {
-    mockFetch((call) =>
-      call.url === `${WORKER_URL}/oauth/refresh` ? json({ error: 'unavailable' }, 502) : undefined,
-    );
-    const { swell, db } = connected({ token_expires_at: hoursFromNow(1) });
-    const result = await reconcile(createAppRequest({ swell }));
-    expect(result.status).toBe('error');
-    expect(db.settings.connection.status).toBe(
-      'Could not connect: Could not renew Gorgias access (502)',
-    );
-    expect(db.state!.refresh_token).toBe('gorgias-refresh-token');
-
-    const retry = mockFetch();
-    await reconcile(createAppRequest({ swell }));
-    expect(retry.calls).toHaveLength(0);
-  }, 20000);
-
-  it('does nothing in Gorgias when nothing changed and it was checked recently', async () => {
+  it('does nothing in Gorgias when settings are unchanged and recently checked', async () => {
     const first = mockFetch();
     const { swell } = connected();
     await reconcile(createAppRequest({ swell }));
@@ -168,7 +107,7 @@ describe('reconcile', () => {
     const second = mockFetch();
     const result = await reconcile(createAppRequest({ swell }));
     expect(result).toMatchObject({ status: 'connected', provisioned: false });
-    expect(second.calls).toHaveLength(0);
+    expect(gorgiasCalls(second.calls)).toHaveLength(0);
   }, 20000);
 
   it('re-provisions the saved integration when a setting changes', async () => {
@@ -191,7 +130,7 @@ describe('reconcile', () => {
     expect(calls.some((c) => c.method === 'POST' && c.url.endsWith('/api/integrations'))).toBe(false);
   }, 20000);
 
-  it('backs off after Gorgias refuses access, until the merchant authorizes again', async () => {
+  it('reports rejected credentials and backs off until settings change', async () => {
     mockFetch((call) =>
       call.url.endsWith('/api/account') ? json({ error: 'nope' }, 401) : undefined,
     );
@@ -199,37 +138,56 @@ describe('reconcile', () => {
     const result = await reconcile(createAppRequest({ swell }));
     expect(result.status).toBe('error');
     expect(db.settings.connection.status).toBe(
-      "Could not connect: Gorgias refused the app's access (401). Connect again from the Gorgias page in your dashboard",
+      'Could not connect: Gorgias rejected the agent email or API key (401)',
     );
 
     const retry = mockFetch();
     await reconcile(createAppRequest({ swell }));
     expect(gorgiasCalls(retry.calls)).toHaveLength(0);
 
-    // The Worker records a new authorization when the merchant reconnects.
-    await swell.put('/connections/state1', { date_authorized: new Date().toISOString() });
+    db.settings.connection.api_key = 'fixed';
     const fixed = mockFetch();
     const after = await reconcile(createAppRequest({ swell }));
     expect(after.status).toBe('connected');
     expect(gorgiasCalls(fixed.calls).length).toBeGreaterThan(0);
   }, 20000);
 
+  it('rotates the Gorgias secret when the API key changes', async () => {
+    const first = mockFetch();
+    const { swell, db } = connected();
+    await reconcile(createAppRequest({ swell }));
+    const created = first.calls.find((c) => c.method === 'POST' && c.url.endsWith('/api/integrations'))!;
+    const before = created.body.http.headers['X-Swell-Gorgias-Secret'];
+
+    db.settings.connection.api_key = 'rotated';
+    const { calls } = mockFetch((call) =>
+      call.method === 'GET' && call.url.endsWith('/api/integrations/11')
+        ? json({ id: 11, type: 'http' })
+        : undefined,
+    );
+    await reconcile(createAppRequest({ swell }));
+    const updated = calls.find((c) => c.method === 'PUT' && c.url.endsWith('/api/integrations/11'))!;
+    const after = updated.body.http.headers['X-Swell-Gorgias-Secret'];
+    expect(after).not.toBe(before);
+    expect(after).toBe((await secretsFor({ ...CONNECTION, api_key: 'rotated' })).events);
+  }, 20000);
+
   it('starts the customer import when sync is on', async () => {
     const { calls } = mockFetch();
-    const { swell, db } = connected({}, { sync: { enabled: true } });
+    const { swell, db } = connected({ sync: { enabled: true } });
     const result = await reconcile(createAppRequest({ swell }));
     expect(result.import).toBe('started');
     const kick = calls.find((c) => c.url.includes('/functions/gorgias/sync'))!;
     expect(kick.url).toBe('https://teststore.swell.store/functions/gorgias/sync');
     expect(kick.body).toEqual({ page: 1 });
-    expect(kick.headers['x-swell-gorgias-secret']).toBe(db.state!.internal_secret);
+    expect(kick.headers['x-swell-gorgias-secret']).toBe((await secretsFor()).internal);
     expect(kick.headers.Authorization).toBe(PUBLIC_KEY);
     expect(db.state).toMatchObject({ backfill_subdomain: 'acme', backfill_page: 1 });
   }, 20000);
 
   it('resumes a stalled import from the saved page', async () => {
     const { calls } = mockFetch();
-    const { swell } = connected({}, { sync: { enabled: true } });
+    const { swell } = connected({ sync: { enabled: true } });
     await reconcile(createAppRequest({ swell }));
     await swell.put('/connections/state1', {
       backfill_page: 4,
@@ -245,7 +203,7 @@ describe('reconcile', () => {
 
   it('writes the status to the settings record by its own id', async () => {
     mockFetch();
-    const { swell } = connected({}, { id: '6aa81465935d8f001217ad00' });
+    const { swell } = connected({ id: '6aa81465935d8f001217ad00' });
     await reconcile(createAppRequest({ swell }));
     const statusWrites = swell.put.mock.calls
       .map(([url]) => url)
@@ -256,44 +214,24 @@ describe('reconcile', () => {
     );
   }, 20000);
 
-  it('revokes the events secret once the tokens are gone', async () => {
+  it('forgets old ids when switching helpdesks', async () => {
     mockFetch();
     const { swell, db } = connected();
     await reconcile(createAppRequest({ swell }));
-    expect(db.state!.events_secret).toBeTruthy();
 
-    await swell.put('/connections/state1', { access_token: null, refresh_token: null });
-    const { calls } = mockFetch();
-    const result = await reconcile(createAppRequest({ swell }));
-    expect(result.status).toBe('incomplete');
-    expect(db.state!.events_secret).toBeNull();
-    expect(db.state!.fingerprint).toBeNull();
-    expect(calls).toHaveLength(0);
-  }, 20000);
-
-  it('rotates the secret and forgets old ids when switching helpdesks', async () => {
-    mockFetch();
-    const { swell, db } = connected();
-    await reconcile(createAppRequest({ swell }));
-    const oldSecret = db.state!.events_secret;
-
-    await swell.put('/connections/state1', {
-      gorgias_subdomain: 'other',
-      date_authorized: new Date().toISOString(),
-    });
+    db.settings.connection = { ...CONNECTION, subdomain: 'other' };
     const { calls } = mockFetch();
     const result = await reconcile(createAppRequest({ swell }));
     expect(result.status).toBe('connected');
-    expect(db.state!.events_secret).toMatch(/^[0-9a-f]{48}$/);
-    expect(db.state!.events_secret).not.toBe(oldSecret);
     expect(db.state!.gorgias_account).toBe('other.gorgias.com');
     // integration 11 belonged to acme; it's never looked up in the new helpdesk
     expect(calls.some((c) => c.url.endsWith('/api/integrations/11'))).toBe(false);
-    expect(
-      calls.some(
-        (c) => c.method === 'POST' && c.url === 'https://other.gorgias.com/api/integrations',
-      ),
-    ).toBe(true);
+    const created = calls.find(
+      (c) => c.method === 'POST' && c.url === 'https://other.gorgias.com/api/integrations',
+    )!;
+    expect(created.body.http.headers['X-Swell-Gorgias-Secret']).toBe(
+      (await secretsFor({ ...CONNECTION, subdomain: 'other' })).events,
+    );
   }, 20000);
 
   it('reports an integration Gorgias has deactivated', async () => {

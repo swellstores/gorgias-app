@@ -1,31 +1,28 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import handler from '../../functions/gorgias-events';
 import {
-  EVENTS_SECRET,
-  INTERNAL_SECRET,
+  CONNECTION,
   createAppRequest,
   createFakeSwell,
   mockFetch,
+  secretsFor,
 } from '../helpers/fakes';
 
 const ACCOUNT_ID = '64f1c2a9e3b7d10012a4f5c1';
-const state = {
-  events_secret: EVENTS_SECRET,
-  internal_secret: INTERNAL_SECRET,
-  gorgias_account: 'acme.gorgias.com',
-};
-const auth = { 'X-Swell-Gorgias-Secret': EVENTS_SECRET };
 
-function setup(options: {
+async function setup(options: {
   data: SwellData;
   account?: SwellData;
   headers?: Record<string, string>;
   syncEnabled?: boolean;
+  connection?: SwellData;
 }) {
   const { calls } = mockFetch();
   const { swell } = createFakeSwell({
-    settings: { sync: { enabled: options.syncEnabled ?? true } },
-    state,
+    settings: {
+      connection: options.connection ?? CONNECTION,
+      sync: { enabled: options.syncEnabled ?? true },
+    },
     accounts: options.account ? [options.account] : [],
     orders: [
       {
@@ -39,6 +36,7 @@ function setup(options: {
       },
     ],
   });
+  const auth = { 'X-Swell-Gorgias-Secret': (await secretsFor()).events };
   const req = createAppRequest({
     swell,
     data: options.data,
@@ -55,22 +53,30 @@ describe('gorgias-events handler', () => {
   afterEach(() => vi.unstubAllGlobals());
 
   it('rejects requests without the secret header', async () => {
-    const { req } = setup({ data: { ticket_id: '1' }, headers: {} });
+    const { req } = await setup({ data: { ticket_id: '1' }, headers: {} });
     const res = (await handler(req)) as Response;
     expect(res.status).toBe(401);
   });
 
   it('does not accept the secret in the body or query', async () => {
-    const { req } = setup({
-      data: { ticket_id: '1', key: EVENTS_SECRET },
+    const { req } = await setup({
+      data: { ticket_id: '1', key: (await secretsFor()).events },
       headers: {},
     });
     const res = (await handler(req)) as Response;
     expect(res.status).toBe(401);
   });
 
+  it('stops accepting the old secret once the API key changes or is removed', async () => {
+    for (const connection of [{ ...CONNECTION, api_key: 'rotated' }, {}]) {
+      const { req } = await setup({ data: { ticket_id: '1' }, connection });
+      const res = (await handler(req)) as Response;
+      expect(res.status).toBe(401);
+    }
+  });
+
   it('records the ticket in one $set write and returns the sidebar data', async () => {
-    const { req, swell } = setup({
+    const { req, swell } = await setup({
       data: {
         ticket_id: 77,
         email: 'Jane@Example.com ',
@@ -109,7 +115,7 @@ describe('gorgias-events handler', () => {
   });
 
   it('falls back to email when external_id is not a Swell id', async () => {
-    const { req, swell } = setup({
+    const { req, swell } = await setup({
       data: { ticket_id: '5', email: 'jane@example.com', external_id: 'shopify-123' },
       account: { id: ACCOUNT_ID, email: 'jane@example.com' },
     });
@@ -124,7 +130,7 @@ describe('gorgias-events handler', () => {
       status: 'closed',
     }));
     existing[0] = { id: '77', status: 'closed' };
-    const { req, swell } = setup({
+    const { req, swell } = await setup({
       data: { ticket_id: '77', external_id: ACCOUNT_ID, status: 'open' },
       account: { id: ACCOUNT_ID, email: 'j@x.co', $app: { gorgias: { tickets: existing } } },
     });
@@ -136,7 +142,7 @@ describe('gorgias-events handler', () => {
   });
 
   it('asks sync to link customers Gorgias does not know yet', async () => {
-    const { req, calls } = setup({
+    const { req, calls } = await setup({
       data: { ticket_id: '5', email: 'jane@example.com' },
       account: { id: ACCOUNT_ID, email: 'jane@example.com' },
     });
@@ -144,11 +150,11 @@ describe('gorgias-events handler', () => {
     const refresh = calls.find((c) => c.url.includes('/functions/gorgias/sync'))!;
     expect(refresh.url).toBe('https://teststore.swell.store/functions/gorgias/sync');
     expect(refresh.body).toEqual({ account_id: ACCOUNT_ID });
-    expect(refresh.headers['x-swell-gorgias-secret']).toBe(INTERNAL_SECRET);
+    expect(refresh.headers['x-swell-gorgias-secret']).toBe((await secretsFor()).internal);
   });
 
   it('does not ask sync when sync is off', async () => {
-    const { req, calls } = setup({
+    const { req, calls } = await setup({
       data: { ticket_id: '5', email: 'jane@example.com' },
       account: { id: ACCOUNT_ID, email: 'jane@example.com' },
       syncEnabled: false,
@@ -158,7 +164,7 @@ describe('gorgias-events handler', () => {
   });
 
   it('returns an empty payload without side effects when no account matches', async () => {
-    const { req, swell } = setup({
+    const { req, swell } = await setup({
       data: { ticket_id: '5', email: 'stranger@example.com' },
     });
     const result = (await handler(req)) as SwellData;

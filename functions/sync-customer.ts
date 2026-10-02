@@ -1,5 +1,4 @@
-import { clientFromState, isAuthError, isConnected } from './lib/gorgias';
-import { loadState } from './lib/state';
+import { clientFromSettings, hasConnection, isAuthError } from './lib/gorgias';
 import {
   changesContactDetails,
   syncAccountToGorgias,
@@ -34,14 +33,11 @@ export default async function (req: SwellRequest) {
     return { skipped: 'no_contact_changes' };
   }
 
-  const [settings, state] = await Promise.all([
-    req.swell.settings(),
-    loadState(req.swell),
-  ]);
+  const settings = await req.swell.settings();
   if (!settings?.sync?.enabled) {
     return { skipped: 'sync_disabled' };
   }
-  if (!isConnected(state)) {
+  if (!hasConnection(settings)) {
     return { skipped: 'not_connected' };
   }
 
@@ -54,12 +50,12 @@ export default async function (req: SwellRequest) {
     return { skipped: 'no_account' };
   }
 
-  const gorgias = clientFromState(state);
+  const gorgias = clientFromSettings(settings);
   try {
     return await syncAccountToGorgias(req.swell, gorgias, accountId);
   } catch (err) {
     if (isAuthError(err)) {
-      console.error(`Gorgias refused the app's access: ${String(err)}`);
+      console.error(`Gorgias rejected the credentials: ${String(err)}`);
       return { skipped: 'gorgias_auth_failed' };
     }
     throw err;

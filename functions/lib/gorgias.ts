@@ -1,11 +1,12 @@
 // Gorgias REST API client for Workers runtime.
-// OAuth2 bearer tokens obtained by the app's frontend Worker (frontend/). Rate
-// limit: 80 req/20s for OAuth apps — requests are spaced sequentially and 429s
-// honor Retry-After within the remaining invocation budget.
+// Basic auth with a REST API key. Rate limit: 40 req/20s per account —
+// requests are spaced sequentially and 429s honor Retry-After within the
+// remaining invocation budget.
 
 export interface GorgiasAuth {
   subdomain: string;
-  accessToken: string;
+  email: string;
+  apiKey: string;
 }
 
 export class GorgiasError extends Error {
@@ -49,7 +50,7 @@ export class GorgiasClient {
   }
 
   private authHeader(): string {
-    return `Bearer ${this.auth.accessToken}`;
+    return `Basic ${btoa(`${this.auth.email}:${this.auth.apiKey}`)}`;
   }
 
   private async throttle(): Promise<void> {
@@ -283,16 +284,37 @@ export function customerUpdateBody(
   return body;
 }
 
-interface TokenState {
-  gorgias_subdomain?: string | null;
-  access_token?: string | null;
-  refresh_token?: string | null;
+const SUBDOMAIN = /^[a-z0-9][a-z0-9-]{0,62}$/;
+
+// Accepts "acme", "acme.gorgias.com" or a pasted helpdesk URL. The result is
+// used to build the URL the API key is sent to, so anything else is refused.
+export function normalizeSubdomain(input: unknown): string | null {
+  let value = String(input ?? '').trim().toLowerCase();
+  value = value.replace(/^https?:\/\//, '').split(/[/?#]/)[0];
+  if (value.endsWith('.gorgias.com')) {
+    value = value.slice(0, -'.gorgias.com'.length);
+  }
+  return SUBDOMAIN.test(value) ? value : null;
 }
 
-// Connected = the merchant authorized the app in Gorgias (frontend/ Worker)
-// and access hasn't been revoked since.
-export function isConnected(state: TokenState): boolean {
-  return !!(state.gorgias_subdomain && state.access_token && state.refresh_token);
+export interface Connection {
+  subdomain: string;
+  email: string;
+  apiKey: string;
+}
+
+// The merchant's connection settings, or null until all three are filled in
+// (a subdomain that isn't a single helpdesk name counts as missing).
+export function connectionFromSettings(settings: SwellSettings): Connection | null {
+  const conn = settings?.connection || {};
+  const subdomain = normalizeSubdomain(conn.subdomain);
+  const email = String(conn.email || '').trim();
+  const apiKey = String(conn.api_key || '').trim();
+  return subdomain && email && apiKey ? { subdomain, email, apiKey } : null;
+}
+
+export function hasConnection(settings: SwellSettings): boolean {
+  return connectionFromSettings(settings) !== null;
 }
 
 // Rejected credentials are a configuration problem, not a transient failure:
@@ -304,12 +326,12 @@ export function isAuthError(err: unknown): boolean {
   );
 }
 
-export function clientFromState(state: TokenState): GorgiasClient {
-  if (!isConnected(state)) {
-    throw new Error('Gorgias is not connected');
+export function clientFromSettings(settings: SwellSettings): GorgiasClient {
+  const connection = connectionFromSettings(settings);
+  if (!connection) {
+    throw new Error(
+      'Gorgias connection settings are incomplete (subdomain, email, api_key required)',
+    );
   }
-  return new GorgiasClient({
-    subdomain: String(state.gorgias_subdomain),
-    accessToken: String(state.access_token),
-  });
+  return new GorgiasClient(connection);
 }

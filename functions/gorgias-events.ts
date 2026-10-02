@@ -1,6 +1,6 @@
-import { verifySecretHeader } from './lib/auth';
+import { appSecrets, verifySecretHeader } from './lib/auth';
 import { callSync } from './lib/connect';
-import { loadState } from './lib/state';
+import { connectionFromSettings } from './lib/gorgias';
 import { loadAccountData } from './lib/sync-account';
 
 export const config: SwellConfig = {
@@ -24,12 +24,11 @@ function field(value: unknown): string {
 // ticket write runs after it returns. The JSON response is the data source for
 // the http-type sidebar widget (customer profile + recent orders).
 export default async function (req: SwellRequest) {
-  const [state, settings] = await Promise.all([
-    loadState(req.swell),
-    req.swell.settings(),
-  ]);
+  const settings = await req.swell.settings();
+  const connection = connectionFromSettings(settings);
+  const secrets = connection ? await appSecrets(connection, req.store.id) : null;
 
-  if (!verifySecretHeader(req.headers, state.events_secret)) {
+  if (!connection || !secrets || !verifySecretHeader(req.headers, secrets.events)) {
     return new SwellResponse({ error: 'unauthorized' }, { status: 401 });
   }
 
@@ -67,9 +66,7 @@ export default async function (req: SwellRequest) {
     subject: field(params.subject),
     status: field(params.status),
     channel: field(params.channel),
-    url: state.gorgias_account
-      ? `https://${state.gorgias_account}/app/ticket/${ticketId}`
-      : '',
+    url: `https://${connection.subdomain}.gorgias.com/app/ticket/${ticketId}`,
     date_updated: new Date().toISOString(),
   };
   const tickets = [
@@ -99,7 +96,7 @@ export default async function (req: SwellRequest) {
   // First contact from a customer Gorgias doesn't know yet: link their Gorgias
   // identity (external_id, phone) in the background.
   if (!linked && settings?.sync?.enabled) {
-    callSync(req, state, { account_id: account.id });
+    callSync(req, secrets, { account_id: account.id });
   }
 
   const [data] = await Promise.all([

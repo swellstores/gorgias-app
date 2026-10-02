@@ -1,13 +1,15 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   GorgiasClient,
-  clientFromState,
+  clientFromSettings,
+  connectionFromSettings,
   customerCreateBody,
   customerUpdateBody,
-  isConnected,
+  hasConnection,
+  normalizeSubdomain,
 } from '../../functions/lib/gorgias';
 
-const auth = { subdomain: 'acme', accessToken: 'token123' };
+const auth = { subdomain: 'acme', email: 'agent@acme.com', apiKey: 'key123' };
 
 function jsonResponse(body: unknown, init: ResponseInit = {}) {
   return new Response(JSON.stringify(body), {
@@ -28,13 +30,15 @@ describe('GorgiasClient', () => {
     vi.unstubAllGlobals();
   });
 
-  it('sends the OAuth bearer token to the subdomain base URL', async () => {
+  it('sends Basic auth to the subdomain base URL', async () => {
     fetchMock.mockResolvedValue(jsonResponse({ id: 1 }));
     const client = new GorgiasClient(auth);
     await client.get('/api/account');
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe('https://acme.gorgias.com/api/account');
-    expect(init.headers.Authorization).toBe('Bearer token123');
+    expect(init.headers.Authorization).toBe(
+      `Basic ${btoa('agent@acme.com:key123')}`,
+    );
   });
 
   it('retries on 429 honoring Retry-After', async () => {
@@ -226,20 +230,29 @@ describe('customer bodies', () => {
   });
 });
 
-describe('clientFromState', () => {
-  const state = {
-    gorgias_subdomain: 'acme',
-    access_token: 'token123',
-    refresh_token: 'refresh123',
-  };
-  it('builds a client from the OAuth state', () => {
-    expect(isConnected(state)).toBe(true);
-    expect(clientFromState(state).baseUrl).toBe('https://acme.gorgias.com');
+describe('connection settings', () => {
+  it('builds a client from complete settings', () => {
+    const client = clientFromSettings({
+      connection: { subdomain: ' Acme.gorgias.com ', email: ' a@b.c ', api_key: ' k ' },
+    });
+    expect(client.baseUrl).toBe('https://acme.gorgias.com');
+    expect(connectionFromSettings({
+      connection: { subdomain: 'acme', email: ' a@b.c ', api_key: ' k ' },
+    })).toEqual({ subdomain: 'acme', email: 'a@b.c', apiKey: 'k' });
   });
-  it('refuses state without tokens', () => {
-    const revoked = { ...state, access_token: null, refresh_token: null };
-    expect(isConnected(revoked)).toBe(false);
-    expect(() => clientFromState(revoked)).toThrow(/not connected/);
-    expect(isConnected({})).toBe(false);
+  it('treats incomplete settings or a bad subdomain as not connected', () => {
+    expect(hasConnection({ connection: { subdomain: 'x' } })).toBe(false);
+    expect(hasConnection({})).toBe(false);
+    expect(
+      hasConnection({ connection: { subdomain: 'evil.com/x', email: 'a@b.c', api_key: 'k' } }),
+    ).toBe(false);
+    expect(() => clientFromSettings({ connection: { subdomain: 'x' } })).toThrow(/incomplete/);
+  });
+  it('normalizes what merchants type as their helpdesk', () => {
+    expect(normalizeSubdomain('Acme')).toBe('acme');
+    expect(normalizeSubdomain('acme.gorgias.com')).toBe('acme');
+    expect(normalizeSubdomain('https://acme.gorgias.com/app/tickets')).toBe('acme');
+    expect(normalizeSubdomain('evil.com')).toBeNull();
+    expect(normalizeSubdomain('')).toBeNull();
   });
 });

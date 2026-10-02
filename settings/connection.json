@@ -1,8 +1,27 @@
 {
   "$schema": "https://json.swell.store/setting.json",
   "label": "Gorgias connection",
-  "description": "Connect or disconnect Gorgias from the Gorgias page in your dashboard menu.",
+  "description": "Connect your Gorgias helpdesk. After you save, the app connects within about a minute and shows the result under Status.",
   "fields": [
+    {
+      "id": "subdomain",
+      "label": "Gorgias subdomain",
+      "type": "text",
+      "description": "The \"acme\" in acme.gorgias.com",
+      "placeholder": "acme"
+    },
+    {
+      "id": "email",
+      "label": "Agent email",
+      "type": "text",
+      "description": "Email of the Gorgias agent the API key belongs to"
+    },
+    {
+      "id": "api_key",
+      "label": "API key",
+      "type": "text",
+      "description": "Gorgias REST API key (Settings → You → REST API)"
+    },
     {
       "id": "status",
       "label": "Status",

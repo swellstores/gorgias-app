@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
+  appSecrets,
   timingSafeEqual,
   verifySecretHeader,
-  randomHex,
   sha256Hex,
 } from '../../functions/lib/auth';
 
@@ -36,11 +36,29 @@ describe('verifySecretHeader', () => {
   });
 });
 
-describe('randomHex', () => {
-  it('returns unique hex strings of the requested byte length', () => {
-    const a = randomHex(24);
-    expect(a).toMatch(/^[0-9a-f]{48}$/);
-    expect(randomHex(24)).not.toBe(a);
+describe('appSecrets', () => {
+  const connection = { subdomain: 'acme', email: 'a@b.c', apiKey: 'key123' };
+  it('derives stable, distinct secrets from the API key', async () => {
+    const a = await appSecrets(connection, 'store1');
+    expect(a.events).toMatch(/^[0-9a-f]{64}$/);
+    expect(a.internal).toMatch(/^[0-9a-f]{64}$/);
+    expect(a.events).not.toBe(a.internal);
+    expect(await appSecrets(connection, 'store1')).toEqual(a);
+  });
+  it('changes with the API key, the helpdesk and the store', async () => {
+    const base = await appSecrets(connection, 'store1');
+    for (const other of [
+      await appSecrets({ ...connection, apiKey: 'other' }, 'store1'),
+      await appSecrets({ ...connection, subdomain: 'other' }, 'store1'),
+      await appSecrets(connection, 'store2'),
+    ]) {
+      expect(other.events).not.toBe(base.events);
+      expect(other.internal).not.toBe(base.internal);
+    }
+  });
+  it('does not contain the API key', async () => {
+    const secrets = await appSecrets(connection, 'store1');
+    expect(JSON.stringify(secrets)).not.toContain('key123');
   });
 });
 

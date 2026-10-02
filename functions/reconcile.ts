@@ -2,9 +2,11 @@ import { reconcile } from './lib/connect';
 
 export const config: SwellConfig = {
   description:
-    'Renew Gorgias access before it expires, re-provision Gorgias when settings change, re-check the connection hourly, and keep the customer import moving',
+    'Connect to Gorgias after the connection settings change, re-check the connection hourly, and keep the customer import moving',
   cron: {
-    schedule: '*/5 * * * *',
+    // Every minute, so a merchant who just saved their API key sees the result
+    // quickly. Idle runs make two reads (settings and the connections record).
+    schedule: '* * * * *',
   },
 };
 
