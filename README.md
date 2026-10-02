@@ -122,7 +122,7 @@ swell api post /functions/gorgias/connect
 
 ```
 swell.json          App manifest (id, type, permissions)
-assets/             App icon and App Store screenshots
+assets/             App icon, social card and App Store screenshots
 content/            Admin UI fields added to customer records
 functions/          Swell functions and shared lib/
 models/             Customer fields and the connections collection

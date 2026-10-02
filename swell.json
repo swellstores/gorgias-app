@@ -5,6 +5,7 @@
 	"type": "integration",
 	"version": "1.0.1",
 	"support_email": "support@swell.is",
+	"documentation_url": "https://developers.swell.is/app-guides/gorgias",
 	"price_external": true,
 	"permissions": [
 		"read_settings",
@@ -16,7 +17,7 @@
 	"images": [
 		{
 			"id": "ticket-sidebar",
-			"title": "Swell orders beside the ticket",
+			"title": "Recent Swell orders beside the ticket",
 			"description": "When a Swell customer writes in, the Gorgias sidebar shows their profile and five latest orders, with items, tracking and links to Swell.",
 			"image_src": "assets/screenshots/1-ticket-sidebar.png"
 		},
