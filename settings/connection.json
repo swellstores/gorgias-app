@@ -19,7 +19,7 @@
     {
       "id": "api_key",
       "label": "API key",
-      "type": "text",
+      "type": "secret",
       "description": "Gorgias REST API key (Settings → You → REST API)"
     },
     {
