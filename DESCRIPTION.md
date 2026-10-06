@@ -12,4 +12,4 @@ When a ticket comes in or changes, Gorgias checks with your store. The app match
 
 **Secured without extra setup.** The app derives the secret for the calls between Gorgias and your store from your API key, so there's nothing else to create or copy, and changing or removing the key revokes it.
 
-Setup takes a few minutes. Copy your REST API key from Gorgias (Settings → You → REST API), enter it in the app settings with your Gorgias subdomain and the email of the agent it belongs to, and save. Within about a minute the settings page shows that you're connected, and the next ticket from a Swell customer opens with their orders in the sidebar.
+Setup takes a few minutes. Copy your REST API key from Gorgias (Settings → You → REST API), enter it in the app settings with your Gorgias subdomain and the email of the agent it belongs to, and save. The app connects within about a minute, and the next ticket from a Swell customer opens with their orders in the sidebar.

@@ -1,7 +1,7 @@
 {
   "$schema": "https://json.swell.store/setting.json",
   "label": "Gorgias connection",
-  "description": "Connect your Gorgias helpdesk. After you save, the app connects within about a minute and shows the result under Status.",
+  "description": "Connect your Gorgias helpdesk. After you save, the app connects within about a minute.",
   "fields": [
     {
       "id": "subdomain",
@@ -21,13 +21,6 @@
       "label": "API key",
       "type": "secret",
       "description": "Gorgias REST API key (Settings → You → REST API)"
-    },
-    {
-      "id": "status",
-      "label": "Status",
-      "type": "text",
-      "readonly": true,
-      "description": "Written by the app. Reload the page to see the latest status"
     }
   ]
 }

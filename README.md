@@ -11,7 +11,6 @@ A Swell integration app that connects a Swell store to the [Gorgias](https://www
 ```
 Merchant saves settings ──► reconcile (cron, every minute)
                               ├─► Gorgias HTTP integration "Swell" + ticket sidebar widget
-                              ├─► connection.status setting ("Connected to acme.gorgias.com …")
                               └─► sync (self-chaining import of existing customers)
 
 Swell account/order events ──► sync-customer ──► Gorgias customer (upsert by external_id / email)
@@ -29,7 +28,7 @@ An OAuth "Connect" flow was built and set aside: it needs a Gorgias partner app,
 
 | Function | Trigger | Purpose |
 | --- | --- | --- |
-| [`reconcile`](functions/reconcile.ts) | Cron, every minute | Connects when the connection settings change (credential check, then create or update the integration and widget), re-checks the connection hourly, keeps the customer import moving and writes the result to the `connection.status` setting. Backs off for 15 minutes after a failure unless the settings change. Idle runs make two reads. |
+| [`reconcile`](functions/reconcile.ts) | Cron, every minute | Connects when the connection settings change (credential check, then create or update the integration and widget), re-checks the connection hourly and keeps the customer import moving. Backs off for 15 minutes after a failure unless the settings change. Idle runs make two reads. |
 | [`connect`](functions/connect.ts) | Route (`POST`, secret key required) | Runs `reconcile` immediately. A developer tool: `swell api post /functions/gorgias/connect`. |
 | [`gorgias-events`](functions/gorgias-events.ts) | Public route (`POST`), called by Gorgias | Matches the ticket's customer to a Swell account (by `external_id`, then email), returns the sidebar payload, and records up to 20 recent tickets on the account. Must respond within Gorgias's 5-second limit. |
 | [`sync`](functions/sync.ts) | Public route (`POST`), called by the app | Syncs one account (`{ "account_id" }`), or imports customers with orders, newest buyers first, 2 per invocation, chaining to the next page until the import limit. Progress is saved after every batch. |
@@ -37,7 +36,7 @@ An OAuth "Connect" flow was built and set aside: it needs a Gorgias partner app,
 
 Shared code lives in [`functions/lib/`](functions/lib):
 
-- `connect.ts`: the reconcile logic, status text and the self-call to `sync`.
+- `connect.ts`: the reconcile logic and the self-call to `sync`.
 - `auth.ts`: header secret check, the secrets derived from the API key, and hashing.
 - `state.ts`: the single `connections` record (Gorgias ids, connection health, import progress).
 - `gorgias.ts`: the Gorgias REST client and connection settings. It spaces requests to stay under Gorgias's limit of 40 requests per 20 seconds, retries 429s using `Retry-After`, follows 301 redirects for merged customers and pages through list endpoints.
@@ -69,7 +68,6 @@ Shared code lives in [`functions/lib/`](functions/lib):
 | `subdomain` | The `acme` in `acme.gorgias.com` (a pasted `acme.gorgias.com` or helpdesk URL also works) |
 | `email` | Email of the Gorgias agent who owns the API key |
 | `api_key` | Gorgias REST API key (Gorgias → Settings → You → REST API) |
-| `status` | Read-only, written by `reconcile` |
 
 **Sync** (`sync`)
 
@@ -84,8 +82,7 @@ Shared code lives in [`functions/lib/`](functions/lib):
 1. Install the app on your Swell store.
 2. In Gorgias, open **Settings → You → REST API** and copy your API key.
 3. In Swell, open **Apps → Gorgias → Settings**, fill in **Gorgias connection** (subdomain, agent email, API key) and save. Turn on **Sync customers to Gorgias** if you want customers created in Gorgias.
-4. Within about a minute, reload the settings page: **Status** reads "Connected to acme.gorgias.com". If it reads "Could not connect", it says why.
-5. Open a ticket from a Swell customer in Gorgias. The **Swell** card and the customer's recent orders appear in the sidebar.
+4. Within about a minute, open a ticket from a Swell customer in Gorgias. The **Swell** card and the customer's recent orders appear in the sidebar.
 
 Changing a connection setting or the ticket-updates toggle re-provisions the existing "Swell" integration and widget on the next run rather than creating duplicates.
 

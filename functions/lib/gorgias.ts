@@ -319,7 +319,7 @@ export function hasConnection(settings: SwellSettings): boolean {
 
 // Rejected credentials are a configuration problem, not a transient failure:
 // event handlers skip instead of throwing, so the platform doesn't retry and
-// eventually auto-disable them. reconcile() reports it in the status.
+// eventually auto-disable them. reconcile() logs it and keeps it as the last error.
 export function isAuthError(err: unknown): boolean {
   return (
     err instanceof GorgiasError && (err.status === 401 || err.status === 403)

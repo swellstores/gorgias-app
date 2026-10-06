@@ -24,14 +24,11 @@ function connected(settings: SwellData = {}) {
 describe('reconcile', () => {
   afterEach(() => vi.unstubAllGlobals());
 
-  it('asks for credentials when settings are incomplete', async () => {
+  it('stops when settings are incomplete', async () => {
     const { calls } = mockFetch();
-    const { swell, db } = createFakeSwell({ settings: { connection: {} } });
+    const { swell } = createFakeSwell({ settings: { connection: {} } });
     const result = await reconcile(createAppRequest({ swell }));
     expect(result.status).toBe('incomplete');
-    expect(db.settings.connection.status).toBe(
-      'Not connected. Enter your Gorgias subdomain, agent email and API key, then save.',
-    );
     expect(calls).toHaveLength(0);
   });
 
@@ -46,14 +43,19 @@ describe('reconcile', () => {
 
   it('reports a missing public key instead of provisioning', async () => {
     const { calls } = mockFetch();
-    const { swell, db } = connected();
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const { swell } = connected();
     const result = await reconcile(createAppRequest({ swell, publicKey: null }));
     expect(result.status).toBe('error');
-    expect(db.settings.connection.status).toMatch(/^Could not connect/);
+    expect(result.error).toMatch(/no app public key/);
+    expect(log).toHaveBeenCalledWith(
+      expect.stringMatching(/^Gorgias connection failed: .*no app public key/),
+    );
     expect(calls).toHaveLength(0);
+    log.mockRestore();
   });
 
-  it('connects on first run: provisions with a derived secret and reports status', async () => {
+  it('connects on first run: provisions with a derived secret', async () => {
     const { calls } = mockFetch();
     const { swell, db } = connected();
     const result = await reconcile(createAppRequest({ swell }));
@@ -65,7 +67,6 @@ describe('reconcile', () => {
       gorgias_account: 'acme.gorgias.com',
       last_error: null,
     });
-    expect(db.settings.connection.status).toMatch(/^Connected to acme\.gorgias\.com\./);
 
     gorgiasCalls(calls).forEach((c) => expect(c.headers.Authorization).toBe(BASIC_AUTH));
     const created = calls.find(
@@ -137,9 +138,7 @@ describe('reconcile', () => {
     const { swell, db } = connected();
     const result = await reconcile(createAppRequest({ swell }));
     expect(result.status).toBe('error');
-    expect(db.settings.connection.status).toBe(
-      'Could not connect: Gorgias rejected the agent email or API key (401)',
-    );
+    expect(result.error).toBe('Gorgias rejected the agent email or API key (401)');
 
     const retry = mockFetch();
     await reconcile(createAppRequest({ swell }));
@@ -201,19 +200,6 @@ describe('reconcile', () => {
     expect(kick.body).toEqual({ page: 4 });
   }, 20000);
 
-  it('writes the status to the settings record by its own id', async () => {
-    mockFetch();
-    const { swell } = connected({ id: '6aa81465935d8f001217ad00' });
-    await reconcile(createAppRequest({ swell }));
-    const statusWrites = swell.put.mock.calls
-      .map(([url]) => url)
-      .filter((url) => url.startsWith('/settings/'));
-    expect(statusWrites.length).toBeGreaterThan(0);
-    statusWrites.forEach((url) =>
-      expect(url).toBe('/settings/6aa81465935d8f001217ad00/connection'),
-    );
-  }, 20000);
-
   it('forgets old ids when switching helpdesks', async () => {
     mockFetch();
     const { swell, db } = connected();
@@ -247,18 +233,6 @@ describe('reconcile', () => {
     );
     const result = await reconcile(createAppRequest({ swell }));
     expect(result.status).toBe('error');
-    expect(db.settings.connection.status).toMatch(/deactivated in Gorgias/);
-  }, 20000);
-
-  it('keeps going when the status write fails', async () => {
-    mockFetch();
-    const { swell } = connected();
-    const put = swell.put.getMockImplementation()!;
-    swell.put.mockImplementation(async (url: string, data: SwellData) => {
-      if (url.startsWith('/settings/')) throw new Error('403 forbidden');
-      return put(url, data);
-    });
-    const result = await reconcile(createAppRequest({ swell }));
-    expect(result.status).toBe('connected');
+    expect(result.error).toMatch(/deactivated in Gorgias/);
   }, 20000);
 });

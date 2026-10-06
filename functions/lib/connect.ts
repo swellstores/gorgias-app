@@ -1,8 +1,7 @@
 // Dashboard-driven connection: the merchant saves their Gorgias API key in the
 // app settings, and reconcile() (run every minute by functions/reconcile.ts)
 // provisions Gorgias when the settings change, re-checks the connection
-// hourly, keeps the customer import moving, and reports the outcome in the
-// read-only connection.status setting.
+// hourly and keeps the customer import moving.
 
 import { AppSecrets, SECRET_HEADER, appSecrets, sha256Hex } from './auth';
 import { GorgiasClient, GorgiasError, connectionFromSettings } from './gorgias';
@@ -14,9 +13,6 @@ const HEALTH_CHECK_MS = 60 * 60 * 1000;
 const RETRY_AFTER_ERROR_MS = 15 * 60 * 1000;
 const IMPORT_STALL_MS = 10 * 60 * 1000;
 
-const NOT_CONNECTED =
-  'Not connected. Enter your Gorgias subdomain, agent email and API key, then save.';
-
 export interface ReconcileResult {
   status: 'incomplete' | 'connected' | 'error';
   provisioned?: boolean;
@@ -26,10 +22,6 @@ export interface ReconcileResult {
 
 function elapsed(now: Date, date?: string | null): number {
   return date ? now.getTime() - Date.parse(date) : Infinity;
-}
-
-function formatTime(date: Date): string {
-  return `${date.toISOString().slice(0, 16).replace('T', ' ')} UTC`;
 }
 
 // The app public key differs per store and per environment, so a short hash of
@@ -50,26 +42,6 @@ export function describeError(err: unknown): string {
     return `Gorgias returned an error (${err.status})`;
   }
   return String((err as Error)?.message || err).slice(0, 200);
-}
-
-// Best effort: a failed status write must not stop the connection itself.
-// The settings record is addressed by its own id (the app's object id): the
-// platform only lets an app write its own settings without write_settings when
-// the path uses that id, not the app slug.
-async function writeStatus(
-  req: SwellRequest,
-  settings: SwellSettings,
-  status: string,
-): Promise<void> {
-  if (settings?.connection?.status === status) return;
-  const target = settings?.id || req.appId;
-  try {
-    await req.swell.put(`/settings/${target}/connection`, { status });
-  } catch (err) {
-    console.error(
-      `Could not write connection status to /settings/${target}: ${String(err)}`,
-    );
-  }
 }
 
 // Calls the sync route through the gateway. Fire-and-forget: the import chain
@@ -128,23 +100,6 @@ async function continueImport(
   return { state, phase: 'running' };
 }
 
-function connectedStatus(
-  state: ConnectionState,
-  importPhase: string,
-): string {
-  const checked = state.date_checked
-    ? ` Last checked ${formatTime(new Date(state.date_checked))}.`
-    : '';
-  const synced = state.backfill_synced || 0;
-  const imported =
-    importPhase === 'off'
-      ? ''
-      : importPhase === 'done'
-        ? ` Customer import complete (${synced} imported).`
-        : ` Customer import in progress (${synced} imported so far).`;
-  return `Connected to ${state.gorgias_account}.${checked}${imported}`;
-}
-
 export async function reconcile(
   req: SwellRequest,
   { force = false }: { force?: boolean } = {},
@@ -159,13 +114,12 @@ export async function reconcile(
   // is derived from them, so it stops being accepted at once.
   const connection = connectionFromSettings(settings);
   if (!connection) {
-    await writeStatus(req, settings, NOT_CONNECTED);
     return { status: 'incomplete' };
   }
   if (!req.publicKey) {
     const error =
       'This environment has no app public key, so Gorgias could not reach Swell. Reinstall the app.';
-    await writeStatus(req, settings, `Could not connect: ${error}`);
+    console.error(`Gorgias connection failed: ${error}`);
     return { status: 'error', error };
   }
 
@@ -209,7 +163,6 @@ export async function reconcile(
     elapsed(now, state.date_last_attempt) < RETRY_AFTER_ERROR_MS;
 
   if (!force && backingOff) {
-    await writeStatus(req, settings, `Could not connect: ${state.last_error}`);
     return { status: 'error', error: state.last_error || undefined };
   }
 
@@ -253,12 +206,10 @@ export async function reconcile(
         last_attempt_fingerprint: fingerprint,
         date_last_attempt: now.toISOString(),
       });
-      await writeStatus(req, settings, `Could not connect: ${error}`);
       return { status: 'error', error };
     }
   }
 
   const imported = await continueImport(req, settings, state, secrets, subdomain, now);
-  await writeStatus(req, settings, connectedStatus(imported.state, imported.phase));
   return { status: 'connected', provisioned, import: imported.phase };
 }
