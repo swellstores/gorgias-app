@@ -1,12 +1,22 @@
 {
   "$schema": "https://json.swell.store/setting.json",
   "label": "Gorgias connection",
-  "description": "Connect your Gorgias helpdesk. After you save, the app connects within about a minute.",
+  "description": "Connect your Gorgias helpdesk. After you save, the app connects within about a minute. Choose Test connection to check the subdomain, email and API key.",
+  "actions": [
+    {
+      "id": "test_connection",
+      "label": "Test connection",
+      "function": "test-connection",
+      "loading_label": "Testing…",
+      "hint": "Checks the subdomain, agent email and API key with Gorgias"
+    }
+  ],
   "fields": [
     {
       "id": "subdomain",
       "label": "Gorgias subdomain",
       "type": "text",
+      "required": true,
       "description": "The \"acme\" in acme.gorgias.com",
       "placeholder": "acme"
     },
@@ -14,12 +24,14 @@
       "id": "email",
       "label": "Agent email",
       "type": "text",
+      "required": true,
       "description": "Email of the Gorgias agent the API key belongs to"
     },
     {
       "id": "api_key",
       "label": "API key",
       "type": "secret",
+      "required": true,
       "description": "Gorgias REST API key (Settings → You → REST API)"
     }
   ]

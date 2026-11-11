@@ -29,6 +29,7 @@ An OAuth "Connect" flow was built and set aside: it needs a Gorgias partner app,
 | Function | Trigger | Purpose |
 | --- | --- | --- |
 | [`reconcile`](functions/reconcile.ts) | Cron, every minute | Connects when the connection settings change (credential check, then create or update the integration and widget), re-checks the connection hourly and keeps the customer import moving. Backs off for 15 minutes after a failure unless the settings change. Idle runs make two reads. |
+| [`test-connection`](functions/test-connection.ts) | Settings action (Test connection) | Checks the subdomain, agent email and API key with `GET /api/account`, telling an unknown helpdesk (404) apart from rejected credentials (401/403). |
 | [`connect`](functions/connect.ts) | Route (`POST`, secret key required) | Runs `reconcile` immediately. A developer tool: `swell api post /functions/gorgias/connect`. |
 | [`gorgias-events`](functions/gorgias-events.ts) | Public route (`POST`), called by Gorgias | Matches the ticket's customer to a Swell account (by `external_id`, then email), returns the sidebar payload, and records up to 20 recent tickets on the account. Must respond within Gorgias's 5-second limit. |
 | [`sync`](functions/sync.ts) | Public route (`POST`), called by the app | Syncs one account (`{ "account_id" }`), or imports customers with orders, newest buyers first, 2 per invocation, chaining to the next page until the import limit. Progress is saved after every batch. |
