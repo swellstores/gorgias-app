@@ -6,7 +6,6 @@
 	"version": "1.0.7",
 	"support_email": "support@swell.is",
 	"documentation_url": "https://developers.swell.is/app-guides/gorgias",
-	"price_external": true,
 	"permissions": [
 		"read_settings",
 		"read_accounts",
